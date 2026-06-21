@@ -1,0 +1,356 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    name="description"
+    content="Sistema responsivo para organizar atividades por data, duração, status e tempo planejado."
+  />
+  <title>Organizador de Atividades</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <a class="skip-link" href="#app">Pular para o conteúdo principal</a>
+
+  <div class="page-shell">
+    <header class="site-header reveal">
+      <nav class="navbar" aria-label="Navegação principal">
+        <a href="#app" class="brand" aria-label="Activity Flow - início">
+          <span class="brand__icon" aria-hidden="true">RL</span>
+          <span>Organize o seu dia!</span>
+        </a>
+
+        <div class="nav-actions">
+          <a href="#calendar" class="nav-link">Calendário</a>
+          <a href="#activityForm" class="nav-link">Cadastro</a>
+          <a href="#activities" class="btn btn--small btn--primary">Nova atividade</a>
+        </div>
+      </nav>
+    </header>
+
+    <main id="app">
+      <section class="app-intro section-space reveal" aria-labelledby="appTitle">
+        <div>
+          <span class="eyebrow">Painel de atividades</span>
+          <h1 id="appTitle">Organize seu dia com clareza.</h1>
+          <p>
+            Cadastre atividades por data, acompanhe o tempo planejado, filtre por status
+            e compartilhe o resumo do dia quando precisar.
+          </p>
+        </div>
+
+        <div class="selected-day-card" aria-label="Dia selecionado">
+          <span>Dia selecionado</span>
+          <strong id="selectedDateLabel">Hoje</strong>
+          <small id="selectedDateStatus">Pronto para alterações</small>
+        </div>
+      </section>
+
+      <section id="summary" class="summary-grid section-space reveal" aria-label="Resumo geral">
+        <article class="summary-card">
+          <span class="summary-card__label">Total geral</span>
+          <strong id="totalActivities">0</strong>
+          <small>atividades cadastradas</small>
+        </article>
+
+        <article class="summary-card">
+          <span class="summary-card__label">Pendentes</span>
+          <strong id="pendingActivities">0</strong>
+          <small>em todas as datas</small>
+        </article>
+
+        <article class="summary-card">
+          <span class="summary-card__label">Concluídas</span>
+          <strong id="completedActivities">0</strong>
+          <small>em todas as datas</small>
+        </article>
+
+        <article class="summary-card">
+          <span class="summary-card__label">Tempo geral</span>
+          <strong id="totalTime">0min</strong>
+          <small>planejado no total</small>
+        </article>
+      </section>
+
+      <section class="planner-layout section-space">
+        <aside id="calendar" class="calendar-panel reveal" aria-labelledby="calendarTitle">
+          <div class="section-heading section-heading--compact">
+            <span class="eyebrow">Calendário</span>
+            <h2 id="calendarTitle">Escolha uma data</h2>
+          </div>
+
+          <div class="calendar-toolbar" aria-label="Navegar pelo calendário">
+            <button class="icon-btn" type="button" id="previousMonthButton" aria-label="Mês anterior">
+              <span aria-hidden="true">&lt;</span>
+            </button>
+            <strong id="calendarMonthLabel">Mês</strong>
+            <button class="icon-btn" type="button" id="nextMonthButton" aria-label="Próximo mês">
+              <span aria-hidden="true">&gt;</span>
+            </button>
+          </div>
+
+          <div class="weekday-grid" aria-hidden="true">
+            <span>Dom</span>
+            <span>Seg</span>
+            <span>Ter</span>
+            <span>Qua</span>
+            <span>Qui</span>
+            <span>Sex</span>
+            <span>Sáb</span>
+          </div>
+
+          <div id="calendarGrid" class="calendar-grid" aria-label="Dias do mês"></div>
+
+          <div class="day-navigation" aria-label="Navegar entre dias">
+            <button class="btn btn--ghost" type="button" id="previousDayButton">Dia anterior</button>
+            <button class="btn btn--secondary" type="button" id="todayButton">Hoje</button>
+            <button class="btn btn--ghost" type="button" id="nextDayButton">Próximo dia</button>
+          </div>
+
+          <div class="calendar-legend" aria-label="Legenda do calendário">
+            <span><i class="legend-dot legend-dot--today"></i>Hoje</span>
+            <span><i class="legend-dot legend-dot--activity"></i>Com atividades</span>
+            <span><i class="legend-dot legend-dot--locked"></i>Encerrado</span>
+          </div>
+        </aside>
+
+        <div class="main-panels">
+          <section class="day-summary-panel reveal" aria-labelledby="daySummaryTitle">
+            <div class="section-heading section-heading--inline">
+              <div>
+                <span class="eyebrow">Resumo do dia</span>
+                <h2 id="daySummaryTitle">Atividades da data</h2>
+              </div>
+
+              <div class="share-actions" aria-label="Compartilhamento do dia">
+                <button class="btn btn--secondary" type="button" id="shareWhatsAppButton">Compartilhar no WhatsApp</button>
+                <button class="btn btn--ghost" type="button" id="shareInstagramButton">Compartilhar no Instagram</button>
+                <button class="btn btn--ghost" type="button" id="copySummaryButton">Copiar resumo</button>
+                <button class="btn btn--primary" type="button" id="nativeShareButton">Compartilhar</button>
+              </div>
+            </div>
+
+            <div id="lockedDayMessage" class="locked-message" role="status" aria-live="polite">
+              Este dia já foi encerrado. Você pode visualizar as atividades, mas não pode alterá-las.
+            </div>
+
+            <article id="dayTimeStatusCard" class="time-status-card" aria-live="polite">
+              <div>
+                <span>Tempo disponível</span>
+                <strong id="statusAvailableTime">0min</strong>
+              </div>
+              <div>
+                <span>Atividades</span>
+                <strong id="statusActivitiesTime">0min</strong>
+              </div>
+              <div>
+                <span>Pausas</span>
+                <strong id="statusBreaksTime">0min</strong>
+              </div>
+              <div>
+                <span>Total planejado</span>
+                <strong id="statusPlannedTime">0min</strong>
+              </div>
+              <div>
+                <span id="statusBalanceLabel">Restante</span>
+                <strong id="statusBalanceTime">0min</strong>
+              </div>
+              <p id="statusMessage">Informe o tempo disponível para acompanhar o limite do dia.</p>
+            </article>
+
+            <div class="instagram-share-card" id="instagramShareCard" aria-label="Card para compartilhar no Instagram">
+              <span>Meu plano de hoje</span>
+              <strong id="instagramCardDate">Hoje</strong>
+              <div class="instagram-card-grid">
+                <small id="instagramCardAvailable">Disponível: 0min</small>
+                <small id="instagramCardPlanned">Planejado: 0min</small>
+                <small id="instagramCardBalance">Restante: 0min</small>
+                <small id="instagramCardTotal">0 atividades</small>
+              </div>
+              <ul id="instagramCardActivities"></ul>
+              <p id="instagramCardStatus">Informe seu planejamento para compartilhar.</p>
+            </div>
+
+            <div class="day-stats" aria-label="Resumo do dia selecionado">
+              <article>
+                <span>Total</span>
+                <strong id="dayTotalActivities">0</strong>
+              </article>
+              <article>
+                <span>Pendentes</span>
+                <strong id="dayPendingActivities">0</strong>
+              </article>
+              <article>
+                <span>Concluídas</span>
+                <strong id="dayCompletedActivities">0</strong>
+              </article>
+              <article>
+                <span>Tempo</span>
+                <strong id="dayTotalTime">0min</strong>
+              </article>
+            </div>
+          </section>
+
+          <section class="planning-panel reveal" aria-labelledby="planningTitle">
+            <div class="section-heading section-heading--inline">
+              <div>
+                <span class="eyebrow">Planejamento inteligente</span>
+                <h2 id="planningTitle">Tempo disponível do dia</h2>
+                <p>Informe sua janela de trabalho e gere uma agenda sugerida para a data selecionada.</p>
+              </div>
+            </div>
+
+            <form id="daySettingsForm" class="settings-form" novalidate>
+              <div class="form-row form-row--compact">
+                <div class="form-group">
+                  <label for="availableDuration">Tempo disponível</label>
+                  <input type="text" id="availableDuration" inputmode="numeric" autocomplete="off" placeholder="Ex: 6:00" />
+                  <input class="is-hidden" type="number" id="availableHours" aria-hidden="true" tabindex="-1" />
+                  <input class="is-hidden" type="number" id="availableMinutes" aria-hidden="true" tabindex="-1" />
+                </div>
+                <div class="form-group">
+                  <label for="startTime">Início opcional</label>
+                  <input type="time" id="startTime" />
+                </div>
+                <div class="form-group">
+                  <label for="endTime">Fim opcional</label>
+                  <input type="time" id="endTime" />
+                </div>
+                <div class="form-group">
+                  <label for="breakTime">Pausa entre atividades</label>
+                  <input type="number" id="breakTime" min="0" max="120" step="5" placeholder="10" />
+                </div>
+              </div>
+
+              <div class="planning-actions">
+                <button class="btn btn--ghost" type="submit" id="saveSettingsButton">Salvar planejamento</button>
+                <button class="btn btn--secondary" type="button" id="generateScheduleButton">Gerar agenda automaticamente</button>
+                <button class="btn btn--primary" type="button" id="generateSuggestionButton">Gerar sugestão inteligente</button>
+              </div>
+            </form>
+
+            <div id="scheduleWarning" class="schedule-warning" role="status" aria-live="polite"></div>
+            <div id="scheduleList" class="schedule-list" aria-live="polite"></div>
+
+            <article id="aiSuggestionCard" class="ai-card is-hidden" aria-live="polite">
+              <div>
+                <span class="eyebrow">IA local</span>
+                <h3>Sugestão inteligente</h3>
+              </div>
+              <p id="aiSuggestionText"></p>
+              <button class="btn btn--secondary is-hidden" type="button" id="applySuggestionButton">Aplicar sugestão</button>
+            </article>
+          </section>
+          <section class="workspace">
+            <div class="form-panel reveal">
+              <div class="section-heading">
+                <span class="eyebrow">Cadastro</span>
+                <h2 id="formTitle">Adicionar atividade</h2>
+                <p>Escolha a data, defina a duração e mantenha seu planejamento organizado.</p>
+              </div>
+
+              <form id="activityForm" class="activity-form" novalidate>
+                <div class="form-group">
+                  <label for="activityName">Nome da atividade</label>
+                  <input
+                    type="text"
+                    id="activityName"
+                    name="activityName"
+                    placeholder="Ex: Estudar JavaScript"
+                    autocomplete="off"
+                    maxlength="80"
+                    required
+                  />
+                  <small class="field-hint">Use um nome curto e fácil de identificar.</small>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group">
+                    <label for="activityDate">Data</label>
+                    <input type="date" id="activityDate" name="activityDate" required />
+                  </div>
+
+                  <div class="form-group">
+                    <label for="activityDuration">Duração</label>
+                    <input type="text" id="activityDuration" name="activityDuration" placeholder="Ex: 2:40" inputmode="numeric" autocomplete="off" required />
+                  </div>
+                </div>
+
+                <select id="activityUnit" name="activityUnit" class="is-hidden" aria-hidden="true" tabindex="-1">
+                  <option value="minutes" selected>Minutos</option>
+                </select>
+
+                <div class="form-feedback" id="formFeedback" role="alert" aria-live="polite"></div>
+
+                <div class="form-actions">
+                  <button type="submit" class="btn btn--primary" id="submitButton">
+                    Adicionar atividade
+                  </button>
+
+                  <button type="button" class="btn btn--ghost is-hidden" id="cancelEditButton">
+                    Cancelar edição
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <section id="activities" class="activities-panel reveal" aria-labelledby="activitiesTitle">
+              <div class="section-heading section-heading--inline">
+                <div>
+                  <span class="eyebrow">Lista do dia</span>
+                  <h2 id="activitiesTitle">Minhas atividades</h2>
+                  <p id="activityListDescription">Gerencie as atividades da data selecionada.</p>
+                </div>
+              </div>
+
+              <div class="filters" aria-label="Filtros de atividades">
+                <button class="filter-btn is-active" type="button" data-filter="all" aria-pressed="true">
+                  Todas
+                </button>
+                <button class="filter-btn" type="button" data-filter="pending" aria-pressed="false">
+                  Pendentes
+                </button>
+                <button class="filter-btn" type="button" data-filter="completed" aria-pressed="false">
+                  Concluídas
+                </button>
+              </div>
+
+              <div id="activityList" class="activity-list" aria-live="polite"></div>
+
+              <div id="emptyState" class="empty-state">
+                <span aria-hidden="true">—</span>
+                <h3>Nenhuma atividade nesta data</h3>
+                <p>Adicione uma atividade para o dia selecionado.</p>
+              </div>
+            </section>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="toastContainer" class="toast-container" aria-live="polite" aria-label="Mensagens do sistema"></div>
+
+    <footer class="site-footer reveal">
+      <p>Activity Flow — pronto para evoluir com uma camada de dados conectada ao Firebase.</p>
+    </footer>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>
+
+
+
+
+
+
+
+
