@@ -910,7 +910,7 @@ const aiService = {
   async generateRemoteSuggestion() {
     // Futuramente, conecte esta função a um backend/API segura para chamar OpenAI, Gemini ou outra IA.
     // Não coloque chaves de API no front-end: elas devem ficar protegidas no servidor.
-    throw new Error("IA remota ainda não configurada.");
+    throw new Error("Assistente remoto ainda não configurado.");
   },
 };
 async function initApp() {
@@ -1046,7 +1046,7 @@ async function generateSuggestionForSelectedDay() {
   state.aiSuggestions[state.selectedDate] = suggestion;
   await aiSuggestionRepository.saveAll(state.aiSuggestions);
   renderAiSuggestion();
-  showToast({ title: "Sugestão gerada", message: "A IA local analisou seu planejamento do dia.", type: "success" });
+  showToast({ title: "Sugestão gerada", message: "O assistente analisou seu planejamento do dia.", type: "success" });
 }
 
 async function applySuggestionForSelectedDay() {
@@ -1648,7 +1648,7 @@ async function generateSuggestionForSelectedDay() {
   state.aiSuggestions[state.selectedDate] = suggestion;
   await aiSuggestionRepository.saveAll(state.aiSuggestions);
   renderAiSuggestion();
-  showToast({ title: "Sugestão gerada", message: "A IA local analisou seu planejamento do dia.", type: "success" });
+  showToast({ title: "Sugestão gerada", message: "O assistente analisou seu planejamento do dia.", type: "success" });
 }
 
 async function applySuggestionForSelectedDay() {
@@ -4727,3 +4727,1011 @@ document.addEventListener("DOMContentLoaded", () => {
     }, 20);
   });
 });
+
+/* Mensagem única no card Meu dia: sem conflito entre pronto e bloqueado. */
+const FINAL_LOCKED_DAY_MESSAGE = "Este dia já foi encerrado. Você pode visualizar, mas não pode alterar.";
+const FINAL_FREE_DAY_MESSAGE = "Seu dia ainda está livre. Defina seu tempo disponível e adicione sua primeira atividade.";
+
+function renderMyDayCard(dayActivities, timeStatus, locked = false) {
+  if (!elements.myDayActivities) return;
+
+  const hasActivities = dayActivities.length > 0;
+  const hasAvailableTime = Boolean(timeStatus.availableMinutes);
+  const hasAnyDayData = hasActivities || hasAvailableTime;
+
+  elements.myDayActivities.textContent = hasAnyDayData ? `${dayActivities.length}` : "-";
+  elements.myDayAvailable.textContent = hasAvailableTime ? formatMinutes(timeStatus.availableMinutes) : "-";
+  elements.myDayPlanned.textContent = hasAnyDayData ? formatMinutes(timeStatus.plannedMinutes || 0) : "-";
+  elements.myDayBalanceLabel.textContent = timeStatus.status === "error" ? "Excesso" : "Restante";
+  elements.myDayBalance.textContent = timeStatus.status === "error"
+    ? formatMinutes(timeStatus.excessMinutes)
+    : (hasAvailableTime ? formatMinutes(timeStatus.remainingMinutes) : "-");
+
+  if (locked) {
+    elements.myDayMessage.textContent = FINAL_LOCKED_DAY_MESSAGE;
+  } else if (!hasAnyDayData) {
+    elements.myDayMessage.textContent = FINAL_FREE_DAY_MESSAGE;
+  } else {
+    elements.myDayMessage.textContent = getDayStateMessage(timeStatus, false);
+  }
+}
+
+function renderSelectedDateHeader() {
+  const locked = isDateLocked(state.selectedDate);
+  const dayActivities = getActivitiesByDate(state.selectedDate);
+  const timeStatus = getDayTimeStatus(dayActivities, getEffectiveDaySettingsForDate(state.selectedDate));
+
+  elements.selectedDateLabel.textContent = formatMyDayDate(state.selectedDate);
+  elements.selectedDateStatus.textContent = locked ? FINAL_LOCKED_DAY_MESSAGE : "Pronto para alterações";
+
+  if (elements.lockedDayMessage) {
+    elements.lockedDayMessage.textContent = FINAL_LOCKED_DAY_MESSAGE;
+    elements.lockedDayMessage.classList.toggle("is-visible", locked);
+  }
+
+  renderMyDayCard(dayActivities, timeStatus, locked);
+}
+
+/* Revisão final de estabilidade: uma aba ativa, layout sem modal no fluxo por abas. */
+(function stabilizeFinalUX() {
+  const VALID_FINAL_TABS = ["planejamento", "cadastro", "minhas-atividades", "inteligente", "compartilhar", "resumo"];
+
+  function normalizeTabId(tabId) {
+    if (tabId === "atividades") return "minhas-atividades";
+    if (tabId === "planejamentos") return "planejamento";
+    if (tabId === "compartilhamento") return "compartilhar";
+    return VALID_FINAL_TABS.includes(tabId) ? tabId : "planejamento";
+  }
+
+  function getActiveFinalTab() {
+    return normalizeTabId(document.querySelector(".tabs-section--final-order .tab-btn.is-active")?.dataset.tab);
+  }
+
+  function activateOnlyFinalTab(tabId) {
+    const tabsSection = document.querySelector(".tabs-section--final-order");
+    if (!tabsSection) return;
+
+    const selected = normalizeTabId(tabId);
+    const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+    const panels = [...tabsSection.querySelectorAll('[role="tabpanel"]')];
+
+    tabs.forEach((tab) => {
+      const active = tab.dataset.tab === selected;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.setAttribute("tabindex", active ? "0" : "-1");
+    });
+
+    panels.forEach((panel) => {
+      const active = panel.dataset.tabPanel === selected;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+    });
+
+    document.body.classList.toggle("is-on-cadastro-tab", selected === "cadastro");
+  }
+
+  function stabilizeLayout() {
+    const mainPanels = document.querySelector(".main-panels");
+    const calendar = document.querySelector("#calendar");
+    const tabsSection = document.querySelector(".tabs-section--final-order") || document.querySelector(".tabs-section");
+    const formPanel = document.querySelector("#tab-panel-cadastro .form-panel");
+    const sharingPanel = document.querySelector("#tab-panel-compartilhar .sharing-panel");
+    const activeTab = getActiveFinalTab();
+
+    if (mainPanels && calendar && tabsSection) {
+      calendar.classList.add("date-selector", "dates-strip", "dates-strip--centered");
+      tabsSection.classList.add("tabs-section--final-order", "tabs-section--after-dates", "tabs-section--definitive");
+      if (calendar.parentElement !== mainPanels) mainPanels.insertBefore(calendar, mainPanels.firstElementChild);
+      if (tabsSection.previousElementSibling !== calendar) calendar.insertAdjacentElement("afterend", tabsSection);
+    }
+
+    if (formPanel) {
+      formPanel.setAttribute("aria-hidden", "false");
+      formPanel.removeAttribute("aria-modal");
+      formPanel.removeAttribute("role");
+    }
+
+    if (sharingPanel && getActivitiesByDate(state.selectedDate).length === 0) {
+      const emptyText = sharingPanel.querySelector("#instagramCardStatus");
+      if (emptyText) emptyText.textContent = "Adicione atividades para gerar um resumo compartilhável.";
+    }
+
+    document.body.classList.remove("activity-form-open");
+    activateOnlyFinalTab(activeTab);
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    window.setTimeout(stabilizeLayout, 520);
+    window.addEventListener("resize", () => window.requestAnimationFrame(stabilizeLayout));
+  });
+
+  document.addEventListener("click", (event) => {
+    const addButton = event.target.closest('.my-day-card__action, .nav-actions .btn[href="#activities"], .nav-actions .btn[href="#activityForm"]');
+    if (!addButton) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stabilizeLayout();
+    activateOnlyFinalTab("cadastro");
+    window.setTimeout(() => document.querySelector("#activityName")?.focus(), 80);
+  }, true);
+
+  const previousSelectDate = typeof selectDate === "function" ? selectDate : null;
+  if (previousSelectDate) {
+    selectDate = function stableSelectDate(dateString, options = {}) {
+      const activeTab = getActiveFinalTab();
+      const result = previousSelectDate(dateString, options);
+      window.requestAnimationFrame(() => {
+        stabilizeLayout();
+        activateOnlyFinalTab(activeTab);
+      });
+      return result;
+    };
+  }
+
+  const previousRenderApp = typeof renderApp === "function" ? renderApp : null;
+  if (previousRenderApp) {
+    renderApp = function stableRenderApp() {
+      const activeTab = getActiveFinalTab();
+      const result = previousRenderApp();
+      window.requestAnimationFrame(() => {
+        stabilizeLayout();
+        activateOnlyFinalTab(activeTab);
+      });
+      return result;
+    };
+  }
+})();
+
+/* Transição suave entre abas sem alterar a estrutura principal. */
+(function initSmoothTabTransitions() {
+  const TRANSITION_OUT_MS = 150;
+  const TRANSITION_IN_MS = 240;
+  let transitionTimer = null;
+
+  function getTabsSection() {
+    return document.querySelector(".tabs-section--final-order");
+  }
+
+  function normalizeTabId(tabId) {
+    if (tabId === "atividades") return "minhas-atividades";
+    if (tabId === "planejamentos") return "planejamento";
+    if (tabId === "compartilhamento") return "compartilhar";
+    return tabId || "planejamento";
+  }
+
+  function setTabButtonState(tabsSection, nextTabId) {
+    tabsSection.querySelectorAll('[role="tab"]').forEach((tab) => {
+      const active = tab.dataset.tab === nextTabId;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.setAttribute("tabindex", active ? "0" : "-1");
+    });
+  }
+
+  function finishImmediately(tabsSection, nextTabId) {
+    tabsSection.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+      const active = panel.dataset.tabPanel === nextTabId;
+      panel.classList.toggle("is-active", active);
+      panel.classList.remove("is-leaving", "is-entering");
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+    });
+    setTabButtonState(tabsSection, nextTabId);
+  }
+
+  function prefersReducedMotion() {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  }
+
+  function switchTabWithTransition(nextTabId, options = {}) {
+    const tabsSection = getTabsSection();
+    if (!tabsSection) return;
+
+    const normalizedNext = normalizeTabId(nextTabId);
+    const currentPanel = tabsSection.querySelector('.tab-panel.is-active');
+    const nextPanel = tabsSection.querySelector(`[data-tab-panel="${normalizedNext}"]`);
+    const currentTabId = currentPanel?.dataset.tabPanel;
+
+    if (!nextPanel || currentTabId === normalizedNext) return;
+
+    window.clearTimeout(transitionTimer);
+    tabsSection.classList.add("tabs-section--animated");
+    setTabButtonState(tabsSection, normalizedNext);
+
+    if (prefersReducedMotion() || options.instant) {
+      finishImmediately(tabsSection, normalizedNext);
+      return;
+    }
+
+    tabsSection.querySelectorAll(".tab-panel").forEach((panel) => {
+      if (panel !== currentPanel && panel !== nextPanel) {
+        panel.classList.remove("is-active", "is-leaving", "is-entering");
+        panel.hidden = true;
+        panel.setAttribute("aria-hidden", "true");
+      }
+    });
+
+    if (currentPanel) {
+      currentPanel.classList.add("is-leaving");
+      currentPanel.classList.remove("is-entering");
+      currentPanel.setAttribute("aria-hidden", "true");
+    }
+
+    transitionTimer = window.setTimeout(() => {
+      if (currentPanel) {
+        currentPanel.classList.remove("is-active", "is-leaving");
+        currentPanel.hidden = true;
+      }
+
+      nextPanel.hidden = false;
+      nextPanel.classList.add("is-active", "is-entering");
+      nextPanel.classList.remove("is-leaving");
+      nextPanel.setAttribute("aria-hidden", "false");
+
+      transitionTimer = window.setTimeout(() => {
+        nextPanel.classList.remove("is-entering");
+      }, TRANSITION_IN_MS);
+    }, TRANSITION_OUT_MS);
+  }
+
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest(".tabs-section--final-order .tab-btn");
+    if (!button) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    switchTabWithTransition(button.dataset.tab);
+  }, true);
+
+  document.addEventListener("keydown", (event) => {
+    const tabsSection = getTabsSection();
+    if (!tabsSection || !event.target.matches('.tabs-section--final-order [role="tab"]')) return;
+    if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) return;
+
+    const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+    const currentIndex = tabs.indexOf(event.target);
+    if (currentIndex < 0) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+
+    const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
+    const nextTab = tabs[(currentIndex + direction + tabs.length) % tabs.length];
+    nextTab.focus();
+    switchTabWithTransition(nextTab.dataset.tab);
+  }, true);
+})();
+
+/* Evolução funcional: progresso, agenda, ordem, templates, foco, notas e estatísticas. */
+const ROUTINE_TEMPLATES = [
+  {
+    id: "study",
+    name: "Rotina de estudos",
+    items: [
+      { name: "Estudar teoria", duration: "1:00" },
+      { name: "Praticar exercícios", duration: "1:30" },
+      { name: "Revisar conteúdo", duration: "0:40" },
+      { name: "Criar resumo", duration: "0:30" },
+    ],
+  },
+  {
+    id: "work",
+    name: "Rotina de trabalho",
+    items: [
+      { name: "Planejar prioridades", duration: "0:30" },
+      { name: "Bloco de execução", duration: "2:00" },
+      { name: "Revisar entregas", duration: "0:40" },
+      { name: "Organizar próximos passos", duration: "0:20" },
+    ],
+  },
+  {
+    id: "training",
+    name: "Rotina de treino",
+    items: [
+      { name: "Aquecimento", duration: "0:15" },
+      { name: "Treino principal", duration: "0:50" },
+      { name: "Alongamento", duration: "0:15" },
+    ],
+  },
+  {
+    id: "project",
+    name: "Projeto pessoal",
+    items: [
+      { name: "Definir tarefa principal", duration: "0:20" },
+      { name: "Construir primeira versão", duration: "1:30" },
+      { name: "Testar e ajustar", duration: "0:45" },
+      { name: "Registrar aprendizados", duration: "0:25" },
+    ],
+  },
+];
+
+function normalizeActivity(activity, index, fallbackDate) {
+  if (!activity || typeof activity !== "object") return null;
+
+  const durationMinutes = Number.isFinite(Number(activity.durationMinutes))
+    ? Number(activity.durationMinutes)
+    : convertToMinutes(activity.duration, activity.unit);
+  const name = String(activity.name || `Atividade ${index + 1}`).trim().replace(/\s+/g, " ").slice(0, 80);
+  const date = isValidISODate(activity.date) ? activity.date : fallbackDate;
+  const order = Number.isFinite(Number(activity.order)) ? Number(activity.order) : index + 1;
+
+  if (!name || !Number.isFinite(durationMinutes) || durationMinutes <= 0) return null;
+
+  return {
+    id: activity.id || createId(),
+    name,
+    date,
+    durationMinutes,
+    status: activity.status === "completed" ? "completed" : "pending",
+    order,
+    note: String(activity.note || "").trim().slice(0, 240),
+    createdAt: activity.createdAt || new Date().toISOString(),
+    updatedAt: activity.updatedAt || new Date().toISOString(),
+  };
+}
+
+function getActivitiesByDate(dateString) {
+  return state.activities
+    .filter((activity) => activity.date === dateString)
+    .sort((a, b) => (Number(a.order || 0) - Number(b.order || 0)) || new Date(a.createdAt) - new Date(b.createdAt));
+}
+
+function getNextOrderForDate(dateString) {
+  const orders = state.activities
+    .filter((activity) => activity.date === dateString)
+    .map((activity) => Number(activity.order || 0));
+  return Math.max(0, ...orders) + 1;
+}
+
+function getNoteInput() {
+  let group = document.querySelector("#activityNote")?.closest(".form-group");
+  if (group) return document.querySelector("#activityNote");
+
+  const feedback = document.querySelector("#formFeedback");
+  group = document.createElement("div");
+  group.className = "form-group activity-note-group";
+  group.innerHTML = `
+    <label for="activityNote">Nota rápida</label>
+    <textarea id="activityNote" name="activityNote" rows="3" maxlength="240" placeholder="Ex: revisar DOM, arrays e funções"></textarea>`;
+  feedback?.insertAdjacentElement("beforebegin", group);
+  return group.querySelector("#activityNote");
+}
+
+function getSanitizedFormData() {
+  const noteInput = getNoteInput();
+  const durationMinutes = parseDurationToMinutes(elements.durationInput.value);
+
+  return {
+    name: elements.nameInput.value.trim().replace(/\s+/g, " "),
+    date: elements.dateInput.value || state.selectedDate,
+    durationInput: elements.durationInput.value.trim(),
+    durationMinutes,
+    status: "pending",
+    note: noteInput?.value.trim().slice(0, 240) || "",
+  };
+}
+
+async function createActivity(data) {
+  const now = new Date().toISOString();
+  const newActivity = {
+    id: createId(),
+    name: data.name,
+    durationMinutes: data.durationMinutes,
+    status: "pending",
+    date: data.date,
+    order: getNextOrderForDate(data.date),
+    note: data.note || "",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const nextActivities = await activityRepository.create(newActivity, state.activities);
+  if (!nextActivities) return false;
+
+  state.activities = nextActivities;
+  selectDate(newActivity.date, { render: false });
+  resetFormMode();
+  renderApp();
+  showToast({ title: "Atividade adicionada", message: `"${newActivity.name}" foi cadastrada com ${formatMinutes(newActivity.durationMinutes)}.`, type: "success" });
+  document.querySelector('.tabs-section--final-order .tab-btn[data-tab="minhas-atividades"]')?.click();
+  return true;
+}
+
+async function updateActivity(activityId, data) {
+  const activity = findActivity(activityId);
+
+  if (!activity) {
+    showToast({ title: "Atividade não encontrada", message: "Não foi possível editar esta atividade.", type: "error" });
+    resetFormMode();
+    return false;
+  }
+
+  if (!canChangeActivity(activity) || isDateLocked(data.date)) {
+    showLockedToast();
+    return false;
+  }
+
+  const limitValidation = canAddActivityToDay(data, data.date, activityId);
+
+  if (!limitValidation.allowed) {
+    showFormFeedback(limitValidation.message, "error");
+    showToast({ title: "Limite de tempo ultrapassado", message: limitValidation.message, type: "error" });
+    return false;
+  }
+
+  const nextActivities = state.activities.map((item) => {
+    if (item.id !== activityId) return item;
+    return {
+      ...item,
+      name: data.name,
+      durationMinutes: data.durationMinutes,
+      date: data.date,
+      note: data.note || "",
+      order: item.date === data.date ? Number(item.order || 0) : getNextOrderForDate(data.date),
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  if (!(await activityRepository.saveAll(nextActivities))) return false;
+
+  state.activities = nextActivities;
+  selectDate(data.date, { render: false });
+  resetFormMode();
+  renderApp();
+  showToast({ title: "Atividade atualizada", message: "As alterações foram salvas com sucesso.", type: "success" });
+  document.querySelector('.tabs-section--final-order .tab-btn[data-tab="minhas-atividades"]')?.click();
+  return true;
+}
+
+function startEditActivity(activityId) {
+  const activity = findActivity(activityId);
+  if (!activity || !canChangeActivity(activity)) return;
+
+  const noteInput = getNoteInput();
+  state.editingId = activityId;
+  elements.nameInput.value = activity.name;
+  elements.dateInput.value = activity.date;
+  elements.durationInput.value = minutesToInputDuration(getActivityMinutes(activity));
+  if (noteInput) noteInput.value = activity.note || "";
+  elements.unitSelect.value = "minutes";
+  elements.formTitle.textContent = "Editar atividade";
+  elements.submitButton.textContent = "Salvar alterações";
+  elements.cancelEditButton.classList.remove("is-hidden");
+  clearFormFeedback();
+  syncFormAvailability();
+  document.querySelector('.tabs-section--final-order .tab-btn[data-tab="cadastro"]')?.click();
+  window.setTimeout(() => elements.nameInput.focus(), 80);
+}
+
+const previousResetFormModeForNotes = resetFormMode;
+resetFormMode = function resetFormModeWithNote() {
+  previousResetFormModeForNotes();
+  const noteInput = getNoteInput();
+  if (noteInput) noteInput.value = "";
+};
+
+function calculateDayProgress(timeStatus) {
+  if (!timeStatus.availableMinutes) return null;
+  const percent = Math.round((timeStatus.plannedMinutes / timeStatus.availableMinutes) * 100);
+  const clamped = Math.min(100, Math.max(0, percent));
+  const tone = percent > 100 ? "danger" : percent >= 90 ? "warning" : percent >= 70 ? "success" : "default";
+  return { percent, clamped, tone };
+}
+
+function createProgressMarkup(timeStatus) {
+  const progress = calculateDayProgress(timeStatus);
+  if (!progress) {
+    return `<div class="day-progress day-progress--empty">Defina o tempo disponível para ver o progresso do dia.</div>`;
+  }
+
+  return `
+    <div class="day-progress day-progress--${progress.tone}" aria-label="Progresso do dia">
+      <div class="day-progress__header">
+        <strong>${formatMinutes(timeStatus.plannedMinutes)} de ${formatMinutes(timeStatus.availableMinutes)} planejadas</strong>
+        <span>${progress.percent}% usado</span>
+      </div>
+      <div class="day-progress__track"><span style="width: ${progress.clamped}%"></span></div>
+    </div>`;
+}
+
+function ensureProgressTargets() {
+  const myDay = document.querySelector(".my-day-card");
+  const planning = document.querySelector("#tab-panel-planejamento .planning-panel") || document.querySelector(".planning-panel:not(.suggestion-panel)");
+
+  if (myDay && !myDay.querySelector("#myDayProgress")) {
+    const progress = document.createElement("div");
+    progress.id = "myDayProgress";
+    progress.className = "my-day-progress-slot";
+    document.querySelector("#myDayMessage")?.insertAdjacentElement("beforebegin", progress);
+  }
+
+  if (planning && !planning.querySelector("#planningProgress")) {
+    const progress = document.createElement("div");
+    progress.id = "planningProgress";
+    progress.className = "planning-progress-slot";
+    planning.querySelector(".section-heading")?.insertAdjacentElement("afterend", progress);
+  }
+}
+
+function addMinutesToTime(time, minutes) {
+  return formatClock(parseTime(time || "08:00") + Number(minutes || 0));
+}
+
+function formatTimeRange(start, end) {
+  return `${start} - ${end}`;
+}
+
+function generateSuggestedSchedule(activities, daySettings) {
+  const settings = normalizeDaySettings(daySettings, state.selectedDate);
+  let cursor = settings.startTime || "08:00";
+  const breakMinutes = Math.max(0, Number(settings.breakMinutes || 0));
+  const items = [];
+
+  activities.forEach((activity, index) => {
+    const start = cursor;
+    const end = addMinutesToTime(start, activity.durationMinutes);
+    items.push({ type: "activity", activity, start, end, label: activity.name, durationMinutes: activity.durationMinutes });
+    cursor = end;
+
+    if (breakMinutes > 0 && index < activities.length - 1) {
+      const breakStart = cursor;
+      const breakEnd = addMinutesToTime(breakStart, breakMinutes);
+      items.push({ type: "break", start: breakStart, end: breakEnd, label: "Pausa", durationMinutes: breakMinutes });
+      cursor = breakEnd;
+    }
+  });
+
+  return items;
+}
+
+function renderSuggestedScheduleAndFocus() {
+  const planning = document.querySelector("#tab-panel-planejamento .planning-panel") || document.querySelector(".planning-panel:not(.suggestion-panel)");
+  if (!planning) return;
+
+  const activities = getActivitiesByDate(state.selectedDate);
+  const settings = getEffectiveDaySettingsForDate(state.selectedDate);
+  const timeStatus = getDayTimeStatus(activities, settings);
+  const schedule = generateSuggestedSchedule(activities, settings);
+  const pending = activities.find((activity) => activity.status !== "completed");
+
+  let panel = planning.querySelector("#enhancedPlanningPanel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "enhancedPlanningPanel";
+    panel.className = "enhanced-planning";
+    planning.appendChild(panel);
+  }
+
+  panel.innerHTML = `
+    <section class="enhanced-card focus-card">
+      <span class="eyebrow">Modo foco</span>
+      ${pending ? `
+        <h3>Agora foque em</h3>
+        <strong>${escapeHTML(pending.name)}</strong>
+        <p>Duração: ${formatMinutes(pending.durationMinutes)}</p>
+        ${pending.note ? `<small>${escapeHTML(pending.note)}</small>` : ""}
+        <button class="btn btn--primary" type="button" data-focus-complete="${pending.id}">Marcar como concluída</button>` : `
+        <h3>Tudo concluído</h3>
+        <p>Todas as atividades pendentes do dia foram concluídas.</p>`}
+    </section>
+    <section class="enhanced-card schedule-card">
+      <span class="eyebrow">Agenda sugerida</span>
+      ${activities.length ? `
+        <ul class="schedule-timeline">
+          ${schedule.map((item) => `
+            <li class="schedule-timeline__item is-${item.type}">
+              <strong>${formatTimeRange(item.start, item.end)}</strong>
+              <span>${escapeHTML(item.label)}</span>
+              <small>${formatMinutes(item.durationMinutes)}</small>
+            </li>`).join("")}
+        </ul>
+        ${timeStatus.status === "error" ? `<p class="schedule-warning-inline">${escapeHTML(timeStatus.message)}</p>` : ""}` : `
+        <p class="empty-copy">Nenhum planejamento criado para este dia. Adicione atividades para montar sua agenda.</p>`}
+    </section>`;
+}
+
+function renderProgressBars() {
+  ensureProgressTargets();
+  const activities = getActivitiesByDate(state.selectedDate);
+  const timeStatus = getDayTimeStatus(activities, getEffectiveDaySettingsForDate(state.selectedDate));
+  const markup = createProgressMarkup(timeStatus);
+  const myDayProgress = document.querySelector("#myDayProgress");
+  const planningProgress = document.querySelector("#planningProgress");
+
+  if (myDayProgress) myDayProgress.innerHTML = markup;
+  if (planningProgress) planningProgress.innerHTML = markup;
+}
+
+function ensureTemplatePanel() {
+  const cadastro = document.querySelector("#tab-panel-cadastro .form-panel") || document.querySelector(".form-panel");
+  if (!cadastro || cadastro.querySelector("#routineTemplates")) return;
+
+  const panel = document.createElement("section");
+  panel.id = "routineTemplates";
+  panel.className = "routine-templates enhanced-card";
+  panel.innerHTML = `
+    <div class="section-heading section-heading--compact">
+      <span class="eyebrow">Modelos de rotina</span>
+      <h3>Comece com um modelo</h3>
+    </div>
+    <div class="template-grid">
+      ${ROUTINE_TEMPLATES.map((template) => `
+        <button class="template-btn" type="button" data-template-id="${template.id}">
+          <strong>${template.name}</strong>
+          <span>${template.items.length} atividades</span>
+        </button>`).join("")}
+    </div>`;
+  cadastro.appendChild(panel);
+}
+
+async function applyRoutineTemplate(templateId) {
+  const template = ROUTINE_TEMPLATES.find((item) => item.id === templateId);
+  if (!template) return;
+
+  if (!window.confirm(`Adicionar o modelo "${template.name}" ao dia selecionado?`)) return;
+
+  const settings = getEffectiveDaySettingsForDate(state.selectedDate);
+  const existing = getActivitiesByDate(state.selectedDate);
+  const templateActivities = template.items.map((item, index) => ({
+    id: createId(),
+    name: item.name,
+    durationMinutes: parseDurationToMinutes(item.duration),
+    date: state.selectedDate,
+    status: "pending",
+    order: getNextOrderForDate(state.selectedDate) + index,
+    note: "",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }));
+
+  const candidate = [...existing, ...templateActivities];
+  const status = getDayTimeStatus(candidate, settings);
+
+  if (!settings.availableMinutes) {
+    showToast({ title: "Tempo disponível obrigatório", message: "Defina o tempo disponível antes de aplicar um modelo.", type: "error" });
+    return;
+  }
+
+  if (status.status === "error") {
+    showToast({ title: "Modelo ultrapassa o limite", message: status.message, type: "error" });
+    return;
+  }
+
+  const nextActivities = [...templateActivities, ...state.activities];
+  if (!(await activityRepository.saveAll(nextActivities))) return;
+
+  state.activities = nextActivities;
+  renderApp();
+  showToast({ title: "Modelo aplicado", message: `${template.name} foi adicionado ao dia.`, type: "success" });
+}
+
+function createActivityCard(activity) {
+  const card = document.createElement("article");
+  const completed = activity.status === "completed";
+  const locked = isDateLocked(activity.date);
+  const disabledAttributes = locked ? "disabled aria-disabled=\"true\" title=\"Este dia já foi encerrado\"" : "";
+  const suggestedTime = getSuggestedTimeRange(activity);
+  const hasNote = Boolean(activity.note);
+
+  card.className = `activity-card ${completed ? "is-completed" : ""} ${locked ? "is-locked" : ""}`;
+  card.dataset.activityId = activity.id;
+  card.draggable = !locked;
+  card.innerHTML = `
+    <div class="activity-card__top">
+      <span class="drag-handle" aria-hidden="true">☰</span>
+      <div>
+        <h3 class="activity-card__title">${escapeHTML(activity.name)}</h3>
+        <div class="activity-card__meta">
+          <span class="meta-pill" title="Duração planejada">${formatMinutes(activity.durationMinutes)}</span>
+          <span class="status-pill ${completed ? "status-pill--completed" : "status-pill--pending"}">${statusMap[activity.status]}</span>
+          ${suggestedTime ? `<span class="meta-pill activity-card__schedule" title="Horário sugerido">${suggestedTime}</span>` : ""}
+          ${locked ? `<span class="status-pill status-pill--locked">Encerrado</span>` : ""}
+        </div>
+      </div>
+    </div>
+    ${hasNote ? `
+      <div class="activity-note">
+        <button class="note-toggle" type="button" data-action="note">Ver nota</button>
+        <p class="activity-note__text" hidden>${escapeHTML(activity.note)}</p>
+      </div>` : ""}
+    <div class="activity-card__actions" aria-label="Ações da atividade ${escapeHTML(activity.name)}">
+      <button class="action-btn action-btn--done" type="button" data-action="toggle" ${disabledAttributes}>${completed ? "Reabrir" : "Concluir"}</button>
+      <button class="action-btn action-btn--edit" type="button" data-action="edit" ${disabledAttributes}>Editar</button>
+      <button class="action-btn" type="button" data-action="up" ${disabledAttributes}>Subir</button>
+      <button class="action-btn" type="button" data-action="down" ${disabledAttributes}>Descer</button>
+      <button class="action-btn action-btn--delete" type="button" data-action="delete" ${disabledAttributes}>Excluir</button>
+    </div>`;
+  return card;
+}
+
+async function saveActivityOrder(orderedIds) {
+  const orderMap = new Map(orderedIds.map((id, index) => [id, index + 1]));
+  state.activities = state.activities.map((activity) => (
+    activity.date === state.selectedDate && orderMap.has(activity.id)
+      ? { ...activity, order: orderMap.get(activity.id), updatedAt: new Date().toISOString() }
+      : activity
+  ));
+  await activityRepository.saveAll(state.activities);
+  renderApp();
+}
+
+async function moveActivity(activityId, direction) {
+  const ordered = getActivitiesByDate(state.selectedDate);
+  const index = ordered.findIndex((activity) => activity.id === activityId);
+  const nextIndex = index + direction;
+  if (index < 0 || nextIndex < 0 || nextIndex >= ordered.length) return;
+  [ordered[index], ordered[nextIndex]] = [ordered[nextIndex], ordered[index]];
+  await saveActivityOrder(ordered.map((activity) => activity.id));
+}
+
+function handleActivityAction(event) {
+  const button = event.target.closest("[data-action]");
+  if (!button) return;
+
+  const card = button.closest(".activity-card");
+  const activityId = card?.dataset.activityId;
+  if (!activityId) return;
+
+  const actions = {
+    toggle: toggleActivityStatus,
+    edit: startEditActivity,
+    delete: deleteActivity,
+    up: (id) => moveActivity(id, -1),
+    down: (id) => moveActivity(id, 1),
+    note: () => {
+      const note = card.querySelector(".activity-note__text");
+      if (!note) return;
+      note.hidden = !note.hidden;
+      button.textContent = note.hidden ? "Ver nota" : "Ocultar nota";
+    },
+  };
+
+  actions[button.dataset.action]?.(activityId);
+}
+
+function bindEnhancedDragAndDrop() {
+  const list = elements.activityList;
+  if (!list || list.dataset.dragReady === "true") return;
+  list.dataset.dragReady = "true";
+  let draggedId = null;
+
+  list.addEventListener("dragstart", (event) => {
+    const card = event.target.closest(".activity-card");
+    if (!card || card.classList.contains("is-locked")) return;
+    draggedId = card.dataset.activityId;
+    card.classList.add("is-dragging");
+    event.dataTransfer.effectAllowed = "move";
+  });
+
+  list.addEventListener("dragend", () => {
+    list.querySelectorAll(".activity-card").forEach((card) => card.classList.remove("is-dragging", "is-drag-over"));
+    draggedId = null;
+  });
+
+  list.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    const card = event.target.closest(".activity-card");
+    list.querySelectorAll(".activity-card").forEach((item) => item.classList.toggle("is-drag-over", item === card && item.dataset.activityId !== draggedId));
+  });
+
+  list.addEventListener("drop", async (event) => {
+    event.preventDefault();
+    const target = event.target.closest(".activity-card");
+    if (!target || !draggedId || target.dataset.activityId === draggedId) return;
+    const orderedIds = [...list.querySelectorAll(".activity-card")].map((card) => card.dataset.activityId);
+    const from = orderedIds.indexOf(draggedId);
+    const to = orderedIds.indexOf(target.dataset.activityId);
+    orderedIds.splice(from, 1);
+    orderedIds.splice(to, 0, draggedId);
+    await saveActivityOrder(orderedIds);
+  });
+}
+
+function getWeekRange(selectedDate) {
+  const date = parseISODate(selectedDate);
+  const day = date.getUTCDay();
+  const start = new Date(date);
+  start.setUTCDate(date.getUTCDate() - day);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  return { start: toISODate(start), end: toISODate(end) };
+}
+
+function calculateCompletionRate(activities) {
+  if (!activities.length) return 0;
+  return Math.round((activities.filter((activity) => activity.status === "completed").length / activities.length) * 100);
+}
+
+function getWeeklyStats(selectedDate, activities) {
+  const range = getWeekRange(selectedDate);
+  const weekActivities = activities.filter((activity) => activity.date >= range.start && activity.date <= range.end);
+  const byDate = new Map();
+  weekActivities.forEach((activity) => byDate.set(activity.date, (byDate.get(activity.date) || 0) + 1));
+  const bestDate = [...byDate.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  return {
+    total: weekActivities.length,
+    completed: weekActivities.filter((activity) => activity.status === "completed").length,
+    plannedMinutes: calculateActivitiesTotal(weekActivities),
+    bestDay: bestDate ? formatDateForHuman(bestDate, { includeWeekday: true }) : "-",
+    completionRate: calculateCompletionRate(weekActivities),
+  };
+}
+
+function renderWeeklyStats() {
+  const summaryPanel = document.querySelector("#tab-panel-resumo .day-summary-panel") || document.querySelector(".day-summary-panel");
+  if (!summaryPanel) return;
+  let card = summaryPanel.querySelector("#weeklyStatsCard");
+  if (!card) {
+    card = document.createElement("section");
+    card.id = "weeklyStatsCard";
+    card.className = "weekly-stats enhanced-card";
+    summaryPanel.appendChild(card);
+  }
+
+  const stats = getWeeklyStats(state.selectedDate, state.activities);
+  card.innerHTML = `
+    <span class="eyebrow">Resumo da semana</span>
+    <div class="weekly-stats__grid">
+      <div><strong>${stats.total}</strong><span>planejadas</span></div>
+      <div><strong>${stats.completed}</strong><span>concluídas</span></div>
+      <div><strong>${formatMinutes(stats.plannedMinutes)}</strong><span>planejadas</span></div>
+      <div><strong>${stats.completionRate}%</strong><span>conclusão</span></div>
+    </div>
+    <p>Melhor dia: ${stats.bestDay}</p>`;
+}
+
+function renderEnhancedFeatures() {
+  getNoteInput();
+  ensureTemplatePanel();
+  renderProgressBars();
+  renderSuggestedScheduleAndFocus();
+  renderWeeklyStats();
+  bindEnhancedDragAndDrop();
+}
+
+const previousRenderAppForEnhancements = renderApp;
+renderApp = function renderAppWithEnhancements() {
+  const result = previousRenderAppForEnhancements();
+  window.requestAnimationFrame(renderEnhancedFeatures);
+  return result;
+};
+
+document.addEventListener("DOMContentLoaded", () => {
+  window.setTimeout(renderEnhancedFeatures, 700);
+
+  document.addEventListener("click", (event) => {
+    const templateButton = event.target.closest("[data-template-id]");
+    if (templateButton) applyRoutineTemplate(templateButton.dataset.templateId);
+
+    const focusButton = event.target.closest("[data-focus-complete]");
+    if (focusButton) toggleActivityStatus(focusButton.dataset.focusComplete);
+  });
+});
+
+/* Correção final: estatísticas semanais usando o parser de data do projeto. */
+function getWeekRange(selectedDate) {
+  const { year, month, day } = parseISODate(selectedDate);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const weekday = date.getUTCDay();
+  const start = new Date(date);
+  start.setUTCDate(date.getUTCDate() - weekday);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  return { start: toISODate(start), end: toISODate(end) };
+}
+
+/* Assistente atualizado para dados atuais: durationMinutes, ordem, agenda, notas e semana. */
+aiService.generateLocalSuggestion = function generateEnhancedLocalSuggestion(dayActivities, daySettings, history) {
+  const settings = normalizeDaySettings(daySettings, state.selectedDate);
+  const orderedActivities = [...dayActivities].sort((a, b) => (Number(a.order || 0) - Number(b.order || 0)) || getActivityMinutes(b) - getActivityMinutes(a));
+  const schedule = generateSuggestedSchedule(orderedActivities, settings);
+  const timeStatus = getDayTimeStatus(orderedActivities, settings);
+  const weeklyStats = getWeeklyStats(state.selectedDate, state.activities);
+  const notesCount = orderedActivities.filter((activity) => activity.note).length;
+  const messages = [];
+
+  if (!orderedActivities.length) {
+    messages.push("Ainda não há atividades nesta data. Cadastre as tarefas principais antes de organizar o dia.");
+  } else if (!settings.availableMinutes) {
+    messages.push("Defina o tempo disponível do dia para eu validar a agenda sugerida com mais precisão.");
+  } else if (timeStatus.status === "error") {
+    messages.push(`${timeStatus.message} Reorganize, reduza ou mova uma atividade para outro dia.`);
+  } else if (timeStatus.status === "limit") {
+    messages.push("Seu planejamento está exatamente no limite. Comece pela atividade mais importante e evite adicionar novos blocos hoje.");
+  } else {
+    messages.push(`Seu dia cabe no tempo disponível, com ${formatMinutes(timeStatus.remainingMinutes)} livres para ajustes.`);
+  }
+
+  if (settings.breakMinutes && orderedActivities.length > 1) {
+    messages.push(`A agenda considera pausas de ${formatMinutes(settings.breakMinutes)} entre atividades.`);
+  } else if (orderedActivities.length >= 4) {
+    messages.push("Como há várias atividades, uma pausa curta entre blocos pode deixar o ritmo mais sustentável.");
+  }
+
+  if (notesCount) messages.push(`${notesCount} atividade${notesCount > 1 ? "s têm" : " tem"} nota rápida. Use essas observações como contexto antes de começar.`);
+  if (weeklyStats.total) messages.push(`Nesta semana você planejou ${weeklyStats.total} atividades e concluiu ${weeklyStats.completionRate}%.`);
+  if (history?.bestWeekday) messages.push(`Seu histórico indica melhor desempenho em ${history.bestWeekday}.`);
+
+  const orderText = orderedActivities.map((activity, index) => `${index + 1}. ${activity.name}`).join("\n");
+  if (orderText) messages.push(`Melhor ordem para agora:\n${orderText}`);
+
+  const scheduleText = schedule
+    .filter((item) => item.type === "activity")
+    .slice(0, 4)
+    .map((item) => `${formatTimeRange(item.start, item.end)} | ${item.label}`)
+    .join("\n");
+  if (scheduleText) messages.push(`Primeiros horários sugeridos:\n${scheduleText}`);
+
+  return {
+    text: messages.join("\n\n"),
+    orderedIds: orderedActivities.map((activity) => activity.id),
+    canApply: orderedActivities.length > 1,
+    generatedAt: new Date().toISOString(),
+  };
+};
+
+async function generateSuggestionForSelectedDay() {
+  if (isDateLocked(state.selectedDate)) {
+    showLockedToast();
+    return;
+  }
+  if (!validateCurrentDayWithinLimit()) return;
+  const suggestion = aiService.generateLocalSuggestion(getActivitiesByDate(state.selectedDate), getEffectiveDaySettingsForDate(state.selectedDate), buildHistoryStats());
+  state.aiSuggestions[state.selectedDate] = suggestion;
+  await aiSuggestionRepository.saveAll(state.aiSuggestions);
+  renderAiSuggestion();
+  showToast({ title: "Sugestão gerada", message: "O assistente analisou seu planejamento do dia.", type: "success" });
+}
+
+async function applySuggestionForSelectedDay() {
+  if (isDateLocked(state.selectedDate)) {
+    showLockedToast();
+    return;
+  }
+  if (!validateCurrentDayWithinLimit()) return;
+  const suggestion = state.aiSuggestions[state.selectedDate];
+  if (!suggestion?.orderedIds?.length) return;
+
+  const order = new Map(suggestion.orderedIds.map((id, index) => [id, index + 1]));
+  state.activities = state.activities.map((activity) => (
+    activity.date === state.selectedDate && order.has(activity.id)
+      ? { ...activity, order: order.get(activity.id), updatedAt: new Date().toISOString() }
+      : activity
+  ));
+
+  if (!(await activityRepository.saveAll(state.activities))) return;
+  renderApp();
+  showToast({ title: "Sugestão aplicada", message: "A ordem das atividades do dia foi reorganizada.", type: "success" });
+}
+
+
+/* Reordenação robusta mesmo quando a lista está filtrada. */
+async function saveActivityOrder(orderedIds) {
+  const currentDay = getActivitiesByDate(state.selectedDate);
+  const currentIds = currentDay.map((activity) => activity.id);
+  const cleanOrderedIds = orderedIds.filter((id, index, list) => currentIds.includes(id) && list.indexOf(id) === index);
+  if (!cleanOrderedIds.length) return;
+
+  let finalIds = cleanOrderedIds;
+
+  if (cleanOrderedIds.length < currentIds.length) {
+    const positions = cleanOrderedIds
+      .map((id) => currentIds.indexOf(id))
+      .filter((index) => index >= 0);
+    const insertAt = positions.length ? Math.min(...positions) : currentIds.length;
+    finalIds = currentIds.filter((id) => !cleanOrderedIds.includes(id));
+    finalIds.splice(insertAt, 0, ...cleanOrderedIds);
+  }
+
+  const orderMap = new Map(finalIds.map((id, index) => [id, index + 1]));
+  state.activities = state.activities.map((activity) => (
+    activity.date === state.selectedDate && orderMap.has(activity.id)
+      ? { ...activity, order: orderMap.get(activity.id), updatedAt: new Date().toISOString() }
+      : activity
+  ));
+  await activityRepository.saveAll(state.activities);
+  renderApp();
+}
