@@ -3228,3 +3228,1502 @@ async function applySuggestionForSelectedDay() {
   renderApp();
   showToast({ title: "Sugestão aplicada", message: "A ordem das atividades do dia foi reorganizada.", type: "success" });
 }
+
+/* Correção consolidada do fluxo de salvamento e duração em minutos. */
+function parseDurationToMinutes(value) {
+  const input = String(value).trim();
+
+  if (!input) return null;
+  if (input.includes(",") || input.includes(".")) return null;
+
+  if (/^\d+$/.test(input)) {
+    const hours = Number(input);
+    const totalMinutes = hours * 60;
+    return totalMinutes > 0 ? totalMinutes : null;
+  }
+
+  const match = input.match(/^(\d+):([0-5]\d)$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const totalMinutes = hours * 60 + minutes;
+
+  return totalMinutes > 0 ? totalMinutes : null;
+}
+
+function canAddActivityToDay(newActivity, selectedDate, editingId = null) {
+  const settings = getEffectiveDaySettingsForDate(selectedDate);
+  const availableTime = Number(settings.availableMinutes || 0);
+  const newActivityTime = Number(newActivity.durationMinutes);
+  const dayActivities = getActivitiesByDate(selectedDate);
+  const activitiesWithoutEditingItem = editingId
+    ? dayActivities.filter((activity) => activity.id !== editingId)
+    : dayActivities;
+
+  if (!availableTime || availableTime <= 0) {
+    return {
+      allowed: false,
+      status: "error",
+      reason: "missing-available",
+      message: "Defina o tempo disponível deste dia antes de adicionar atividades.",
+    };
+  }
+
+  if (!Number.isFinite(newActivityTime) || newActivityTime <= 0) {
+    return {
+      allowed: false,
+      status: "error",
+      reason: "invalid-duration",
+      message: "Informe uma duração válida. Exemplo: 2:40 para 2 horas e 40 minutos.",
+    };
+  }
+
+  const candidateActivities = [...activitiesWithoutEditingItem, { durationMinutes: newActivityTime }];
+  const currentTotal = calculateActivitiesTotal(activitiesWithoutEditingItem) + calculateBreaksTotal(activitiesWithoutEditingItem.length, settings.breakMinutes);
+  const finalTotal = calculateActivitiesTotal(candidateActivities) + calculateBreaksTotal(candidateActivities.length, settings.breakMinutes);
+  const difference = finalTotal - availableTime;
+
+  if (difference > 0) {
+    return {
+      allowed: false,
+      status: "error",
+      currentTotal,
+      finalTotal,
+      difference,
+      message: `Não foi possível adicionar esta atividade. Ela ultrapassa o tempo disponível do dia em ${formatMinutes(difference)}.`,
+    };
+  }
+
+  if (difference === 0) {
+    return {
+      allowed: true,
+      status: "limit",
+      currentTotal,
+      finalTotal,
+      difference,
+      message: "Essa atividade cabe no seu dia, mas deixará o planejamento no limite.",
+    };
+  }
+
+  return {
+    allowed: true,
+    status: "available",
+    currentTotal,
+    finalTotal,
+    difference,
+    message: `Essa atividade cabe no seu dia. Depois dela, ainda restará ${formatMinutes(Math.abs(difference))} disponível.`,
+  };
+}
+
+async function handleFormSubmit(event) {
+  event.preventDefault();
+
+  const activityData = getSanitizedFormData();
+  const validation = validateActivityData(activityData);
+
+  if (!validation.isValid) {
+    showFormFeedback(validation.message, "error");
+    return;
+  }
+
+  if (isDateLocked(activityData.date)) {
+    showLockedToast();
+    showFormFeedback("Este dia já foi encerrado. Você pode visualizar as atividades, mas não pode alterá-las.", "error");
+    return;
+  }
+
+  const limitValidation = canAddActivityToDay(activityData, activityData.date, state.editingId);
+
+  if (!limitValidation.allowed) {
+    showFormFeedback(limitValidation.message, "error");
+    showToast({
+      title: limitValidation.reason === "missing-available" ? "Tempo disponível obrigatório" : "Limite de tempo ultrapassado",
+      message: limitValidation.message,
+      type: "error",
+    });
+    return;
+  }
+
+  const settingsSaved = await persistVisibleDaySettingsIfNeeded(activityData.date);
+  if (!settingsSaved) {
+    showFormFeedback("Defina o tempo disponível deste dia antes de adicionar atividades.", "error");
+    return;
+  }
+
+  if (state.editingId) {
+    await updateActivity(state.editingId, activityData, limitValidation);
+    return;
+  }
+
+  await createActivity(activityData, limitValidation);
+}
+
+async function createActivity(data, limitValidation = null) {
+  const now = new Date().toISOString();
+  const newActivity = {
+    id: createId(),
+    name: data.name,
+    durationMinutes: data.durationMinutes,
+    date: data.date,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const nextActivities = await activityRepository.create(newActivity, state.activities);
+  if (!nextActivities) return false;
+
+  state.activities = nextActivities;
+  selectDate(newActivity.date, { render: false });
+  resetFormMode();
+  renderApp();
+  showToast({
+    title: limitValidation?.status === "limit" ? "Planejamento no limite" : "Atividade adicionada",
+    message: limitValidation?.message || `"${newActivity.name}" foi cadastrada com ${formatMinutes(newActivity.durationMinutes)}.`,
+    type: limitValidation?.status === "limit" ? "info" : "success",
+  });
+  return true;
+}
+
+async function updateActivity(activityId, data, limitValidation = null) {
+  const activity = findActivity(activityId);
+
+  if (!activity) {
+    showToast({ title: "Atividade não encontrada", message: "Não foi possível editar esta atividade.", type: "error" });
+    resetFormMode();
+    return false;
+  }
+
+  if (!canChangeActivity(activity) || isDateLocked(data.date)) {
+    showLockedToast();
+    return false;
+  }
+
+  const validation = limitValidation || canAddActivityToDay(data, data.date, activityId);
+
+  if (!validation.allowed) {
+    showFormFeedback(validation.message, "error");
+    showToast({ title: "Limite de tempo ultrapassado", message: validation.message, type: "error" });
+    return false;
+  }
+
+  const nextActivities = state.activities.map((item) => {
+    if (item.id !== activityId) return item;
+    return {
+      id: item.id,
+      name: data.name,
+      durationMinutes: data.durationMinutes,
+      status: item.status,
+      date: data.date,
+      createdAt: item.createdAt,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  if (!(await activityRepository.saveAll(nextActivities))) return false;
+
+  state.activities = nextActivities;
+  selectDate(data.date, { render: false });
+  resetFormMode();
+  renderApp();
+  showToast({
+    title: validation.status === "limit" ? "Planejamento no limite" : "Atividade atualizada",
+    message: validation.status === "limit" ? validation.message : "As alterações foram salvas com sucesso.",
+    type: validation.status === "limit" ? "info" : "success",
+  });
+  return true;
+}
+
+function createActivityCard(activity) {
+  const card = document.createElement("article");
+  const completed = activity.status === "completed";
+  const locked = isDateLocked(activity.date);
+  const disabledAttributes = locked ? "disabled aria-disabled=\"true\" title=\"Este dia já foi encerrado\"" : "";
+  card.className = `activity-card ${completed ? "is-completed" : ""} ${locked ? "is-locked" : ""}`;
+  card.dataset.activityId = activity.id;
+  card.innerHTML = `
+    <div class="activity-card__top">
+      <div>
+        <h3 class="activity-card__title">${escapeHTML(activity.name)}</h3>
+        <div class="activity-card__meta">
+          <span class="meta-pill" title="Data da atividade">${formatDateForHuman(activity.date)}</span>
+          <span class="meta-pill" title="Duração planejada">${formatMinutes(activity.durationMinutes)}</span>
+          <span class="status-pill ${completed ? "status-pill--completed" : "status-pill--pending"}">${statusMap[activity.status]}</span>
+          ${locked ? `<span class="status-pill status-pill--locked">Encerrado</span>` : ""}
+        </div>
+      </div>
+    </div>
+    <div class="activity-card__actions" aria-label="Ações da atividade ${escapeHTML(activity.name)}">
+      <button class="action-btn action-btn--done" type="button" data-action="toggle" ${disabledAttributes}>${completed ? "Reabrir" : "Concluir"}</button>
+      <button class="action-btn action-btn--edit" type="button" data-action="edit" ${disabledAttributes}>Editar</button>
+      <button class="action-btn action-btn--delete" type="button" data-action="delete" ${disabledAttributes}>Excluir</button>
+    </div>`;
+  return card;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const suggestionCard = document.querySelector("#aiSuggestionCard");
+  const panels = document.querySelector(".main-panels");
+  if (!suggestionCard || !panels || suggestionCard.closest(".suggestion-panel")) return;
+
+  const section = document.createElement("section");
+  section.className = "suggestion-panel planning-panel reveal is-visible";
+  section.setAttribute("aria-labelledby", "suggestionTitle");
+  section.innerHTML = `
+    <div class="section-heading">
+      <span class="eyebrow">Sugestão inteligente</span>
+      <h2 id="suggestionTitle">Próximo melhor ajuste</h2>
+    </div>`;
+  section.appendChild(suggestionCard);
+  panels.appendChild(section);
+});
+
+const THEME_STORAGE_KEY = "activity-flow.theme.v1";
+
+function initTheme() {
+  const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
+  const initialTheme = savedTheme === "dark" || savedTheme === "light"
+    ? savedTheme
+    : prefersDark
+      ? "dark"
+      : "light";
+
+  applyTheme(initialTheme, { persist: false });
+
+  const toggleButton = document.querySelector("#themeToggle");
+  if (toggleButton) {
+    toggleButton.addEventListener("click", toggleTheme);
+  }
+}
+
+function toggleTheme() {
+  const nextTheme = document.body.classList.contains("dark-mode") ? "light" : "dark";
+  applyTheme(nextTheme);
+}
+
+function applyTheme(theme, options = {}) {
+  const normalizedTheme = theme === "dark" ? "dark" : "light";
+  const isDark = normalizedTheme === "dark";
+  const toggleButton = document.querySelector("#themeToggle");
+
+  document.body.classList.toggle("dark-mode", isDark);
+  document.documentElement.dataset.theme = normalizedTheme;
+
+  if (toggleButton) {
+    toggleButton.setAttribute("aria-pressed", String(isDark));
+    toggleButton.setAttribute("aria-label", isDark ? "Alternar para modo claro" : "Alternar para modo escuro");
+    const icon = toggleButton.querySelector(".theme-toggle__icon");
+    const text = toggleButton.querySelector(".theme-toggle__text");
+    if (icon) icon.textContent = isDark ? "☼" : "☾";
+    if (text) text.textContent = isDark ? "Modo claro" : "Modo escuro";
+  }
+
+  if (options.persist !== false) {
+    localStorage.setItem(THEME_STORAGE_KEY, normalizedTheme);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", initTheme);
+
+/* Camada de experiência: Meu dia, calendário móvel e compartilhamento no fim do fluxo. */
+Object.assign(elements, {
+  myDayActivities: document.querySelector("#myDayActivities"),
+  myDayAvailable: document.querySelector("#myDayAvailable"),
+  myDayPlanned: document.querySelector("#myDayPlanned"),
+  myDayBalanceLabel: document.querySelector("#myDayBalanceLabel"),
+  myDayBalance: document.querySelector("#myDayBalance"),
+  myDayMessage: document.querySelector("#myDayMessage"),
+  calendarToggle: document.querySelector("#calendarToggle"),
+});
+
+function renderSelectedDateHeader() {
+  const locked = isDateLocked(state.selectedDate);
+  const dayActivities = getActivitiesByDate(state.selectedDate);
+  const timeStatus = getDayTimeStatus(dayActivities, getEffectiveDaySettingsForDate(state.selectedDate));
+
+  elements.selectedDateLabel.textContent = formatDateForHuman(state.selectedDate, { includeWeekday: true });
+  elements.selectedDateStatus.textContent = locked ? "Dia encerrado para alterações" : getReadableDayStatus(timeStatus);
+  elements.lockedDayMessage.classList.toggle("is-visible", locked);
+
+  renderMyDayCard(dayActivities, timeStatus);
+}
+
+function renderMyDayCard(dayActivities, timeStatus) {
+  if (!elements.myDayActivities) return;
+
+  elements.myDayActivities.textContent = `${dayActivities.length}`;
+  elements.myDayAvailable.textContent = timeStatus.availableMinutes ? formatMinutes(timeStatus.availableMinutes) : "Não informado";
+  elements.myDayPlanned.textContent = formatMinutes(timeStatus.plannedMinutes || 0);
+  elements.myDayBalanceLabel.textContent = timeStatus.status === "error" ? "Excesso" : "Restante";
+  elements.myDayBalance.textContent = timeStatus.status === "error" ? formatMinutes(timeStatus.excessMinutes) : formatMinutes(timeStatus.remainingMinutes);
+  elements.myDayMessage.textContent = getReadableDayStatus(timeStatus);
+}
+
+function getReadableDayStatus(timeStatus) {
+  if (!timeStatus.availableMinutes) return "Defina o tempo disponível para começar a organizar seu dia.";
+  if (timeStatus.status === "error") return `Essa atividade ultrapassa o tempo disponível em ${formatMinutes(timeStatus.excessMinutes)}.`;
+  if (timeStatus.status === "limit") return "Seu planejamento está no limite.";
+  if (timeStatus.remainingMinutes > 0) return `Você ainda tem ${formatMinutes(timeStatus.remainingMinutes)} disponível.`;
+  return "Seu dia está bem distribuído.";
+}
+
+function renderInstagramCard(timeStatus, activities, completed, pending) {
+  if (!elements.instagramShareCard) return;
+
+  const hasActivities = activities.length > 0;
+  elements.instagramCardDate.textContent = formatDateForHuman(state.selectedDate);
+  elements.instagramCardAvailable.textContent = `Disponível: ${timeStatus.availableMinutes ? formatMinutes(timeStatus.availableMinutes) : "não informado"}`;
+  elements.instagramCardPlanned.textContent = `Planejado: ${formatMinutes(timeStatus.plannedMinutes || 0)}`;
+  elements.instagramCardBalance.textContent = `${timeStatus.status === "error" ? "Excesso" : "Restante"}: ${timeStatus.status === "error" ? formatMinutes(timeStatus.excessMinutes) : formatMinutes(timeStatus.remainingMinutes)}`;
+  elements.instagramCardTotal.textContent = `${activities.length} atividade${activities.length === 1 ? "" : "s"} | ${pending} pend. | ${completed} concl.`;
+  elements.instagramCardActivities.innerHTML = "";
+
+  if (hasActivities) {
+    activities.slice(0, 4).forEach((activity) => {
+      const item = document.createElement("li");
+      item.textContent = `${activity.name} · ${formatMinutes(activity.durationMinutes)}`;
+      elements.instagramCardActivities.appendChild(item);
+    });
+  }
+
+  elements.instagramCardStatus.textContent = hasActivities
+    ? getReadableDayStatus(timeStatus)
+    : "Adicione atividades para gerar um resumo compartilhável.";
+  elements.instagramShareCard.className = `instagram-share-card is-${timeStatus.status}${hasActivities ? "" : " is-empty"}`;
+}
+
+function getSuggestedTimeRange(activity) {
+  if (!activity || activity.date !== state.selectedDate) return "";
+
+  const settings = getEffectiveDaySettingsForDate(state.selectedDate);
+  const start = parseTime(settings.startTime || "08:00");
+  const breakMinutes = Math.max(0, Number(settings.breakMinutes || 0));
+  let cursor = start;
+
+  for (const item of getActivitiesByDate(state.selectedDate)) {
+    const activityStart = cursor;
+    const activityEnd = activityStart + Number(item.durationMinutes || 0);
+    if (item.id === activity.id) return `${formatClock(activityStart)} - ${formatClock(activityEnd)}`;
+    cursor = activityEnd + breakMinutes;
+  }
+
+  return "";
+}
+
+function createActivityCard(activity) {
+  const card = document.createElement("article");
+  const completed = activity.status === "completed";
+  const locked = isDateLocked(activity.date);
+  const disabledAttributes = locked ? "disabled aria-disabled=\"true\" title=\"Este dia já foi encerrado\"" : "";
+  const suggestedTime = getSuggestedTimeRange(activity);
+  card.className = `activity-card ${completed ? "is-completed" : ""} ${locked ? "is-locked" : ""}`;
+  card.dataset.activityId = activity.id;
+  card.innerHTML = `
+    <div class="activity-card__top">
+      <div>
+        <h3 class="activity-card__title">${escapeHTML(activity.name)}</h3>
+        <div class="activity-card__meta">
+          <span class="meta-pill" title="Duração planejada">${formatMinutes(activity.durationMinutes)}</span>
+          <span class="status-pill ${completed ? "status-pill--completed" : "status-pill--pending"}">${statusMap[activity.status]}</span>
+          ${suggestedTime ? `<span class="meta-pill activity-card__schedule" title="Horário sugerido">${suggestedTime}</span>` : ""}
+          ${locked ? `<span class="status-pill status-pill--locked">Encerrado</span>` : ""}
+        </div>
+      </div>
+    </div>
+    <div class="activity-card__actions" aria-label="Ações da atividade ${escapeHTML(activity.name)}">
+      <button class="action-btn action-btn--done" type="button" data-action="toggle" ${disabledAttributes}>${completed ? "Reabrir" : "Concluir"}</button>
+      <button class="action-btn action-btn--edit" type="button" data-action="edit" ${disabledAttributes}>Editar</button>
+      <button class="action-btn action-btn--delete" type="button" data-action="delete" ${disabledAttributes}>Excluir</button>
+    </div>`;
+  return card;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  const panels = document.querySelector(".main-panels");
+  const shareActions = document.querySelector(".day-summary-panel .share-actions");
+  const shareCard = document.querySelector("#instagramShareCard");
+
+  if (panels && shareActions && shareCard && !document.querySelector(".sharing-panel")) {
+    const sharingPanel = document.createElement("section");
+    sharingPanel.className = "sharing-panel reveal is-visible";
+    sharingPanel.setAttribute("aria-labelledby", "sharingTitle");
+    sharingPanel.innerHTML = `
+      <div class="section-heading">
+        <span class="eyebrow">Compartilhamento</span>
+        <h2 id="sharingTitle">Resumo do dia</h2>
+      </div>`;
+    sharingPanel.appendChild(shareCard);
+    sharingPanel.appendChild(shareActions);
+    panels.appendChild(sharingPanel);
+  }
+
+  const suggestionTitle = document.querySelector("#suggestionTitle");
+  if (suggestionTitle) suggestionTitle.textContent = "Assistente de planejamento";
+
+  const aiText = document.querySelector("#aiSuggestionText");
+  if (aiText && !state.aiSuggestions[state.selectedDate]) {
+    aiText.textContent = "Posso sugerir a melhor ordem das suas atividades com base no tempo disponível do dia.";
+  }
+
+  const applyButton = document.querySelector("#applySuggestionButton");
+  if (applyButton) applyButton.textContent = "Organizar meu dia";
+
+  if (elements.calendarToggle) {
+    elements.calendarToggle.addEventListener("click", () => {
+      const calendar = document.querySelector("#calendar");
+      const expanded = elements.calendarToggle.getAttribute("aria-expanded") === "true";
+      elements.calendarToggle.setAttribute("aria-expanded", String(!expanded));
+      elements.calendarToggle.textContent = expanded ? "Ver calendário" : "Ocultar calendário";
+      calendar?.classList.toggle("is-open", !expanded);
+    });
+  }
+});
+
+function formatMyDayDate(dateString) {
+  const baseDate = formatDateForHuman(dateString);
+  return dateString === getTodayBrasiliaISO() ? `Hoje, ${baseDate}` : baseDate;
+}
+
+function renderSelectedDateHeader() {
+  const locked = isDateLocked(state.selectedDate);
+  const dayActivities = getActivitiesByDate(state.selectedDate);
+  const timeStatus = getDayTimeStatus(dayActivities, getEffectiveDaySettingsForDate(state.selectedDate));
+
+  elements.selectedDateLabel.textContent = formatMyDayDate(state.selectedDate);
+  elements.selectedDateStatus.textContent = locked ? "Dia encerrado para alterações" : getReadableDayStatus(timeStatus);
+  elements.lockedDayMessage.classList.toggle("is-visible", locked);
+
+  renderMyDayCard(dayActivities, timeStatus);
+}
+
+function getSuggestedTimeRange(activity) {
+  if (!activity || activity.date !== state.selectedDate) return "";
+
+  const settings = getEffectiveDaySettingsForDate(state.selectedDate);
+  if (!settings.availableMinutes) return "";
+
+  const start = parseTime(settings.startTime || "08:00");
+  const breakMinutes = Math.max(0, Number(settings.breakMinutes || 0));
+  let cursor = start;
+
+  for (const item of getActivitiesByDate(state.selectedDate)) {
+    const activityStart = cursor;
+    const activityEnd = activityStart + Number(item.durationMinutes || 0);
+    if (item.id === activity.id) return `${formatClock(activityStart)} - ${formatClock(activityEnd)}`;
+    cursor = activityEnd + breakMinutes;
+  }
+
+  return "";
+}
+
+function getDayStateMessage(timeStatus, locked = false) {
+  if (locked) return "Este dia já foi encerrado. Você pode visualizar as atividades, mas não pode alterá-las.";
+  if (!timeStatus.availableMinutes) return "Pronto para alterações.";
+  if (timeStatus.status === "error") return `Essa atividade ultrapassa o tempo disponível em ${formatMinutes(timeStatus.excessMinutes)}.`;
+  if (timeStatus.status === "limit") return "Seu planejamento está no limite.";
+  if (timeStatus.remainingMinutes > 0) return `Você ainda tem ${formatMinutes(timeStatus.remainingMinutes)} disponível.`;
+  return "Seu dia está bem distribuído.";
+}
+
+function renderSelectedDateHeader() {
+  const locked = isDateLocked(state.selectedDate);
+  const dayActivities = getActivitiesByDate(state.selectedDate);
+  const timeStatus = getDayTimeStatus(dayActivities, getEffectiveDaySettingsForDate(state.selectedDate));
+
+  elements.selectedDateLabel.textContent = formatMyDayDate(state.selectedDate);
+  elements.selectedDateStatus.textContent = locked
+    ? "Este dia já foi encerrado. Você pode visualizar as atividades, mas não pode alterá-las."
+    : "Pronto para alterações.";
+  elements.lockedDayMessage.classList.remove("is-visible");
+
+  renderMyDayCard(dayActivities, timeStatus, locked);
+}
+
+function renderMyDayCard(dayActivities, timeStatus, locked = false) {
+  if (!elements.myDayActivities) return;
+
+  const hasAnyDayData = dayActivities.length > 0 || Boolean(timeStatus.availableMinutes);
+  elements.myDayActivities.textContent = hasAnyDayData ? `${dayActivities.length}` : "-";
+  elements.myDayAvailable.textContent = timeStatus.availableMinutes ? formatMinutes(timeStatus.availableMinutes) : "-";
+  elements.myDayPlanned.textContent = hasAnyDayData ? formatMinutes(timeStatus.plannedMinutes || 0) : "-";
+  elements.myDayBalanceLabel.textContent = timeStatus.status === "error" ? "Excesso" : "Restante";
+  elements.myDayBalance.textContent = timeStatus.status === "error" ? formatMinutes(timeStatus.excessMinutes) : (timeStatus.availableMinutes ? formatMinutes(timeStatus.remainingMinutes) : "-");
+  elements.myDayMessage.textContent = getDayStateMessage(timeStatus, locked);
+}
+
+function updateSharingAvailability(hasActivities) {
+  const sharingPanel = document.querySelector(".sharing-panel");
+  const buttons = [elements.shareWhatsAppButton, elements.shareInstagramButton, elements.copySummaryButton, elements.nativeShareButton].filter(Boolean);
+
+  sharingPanel?.classList.toggle("is-disabled", !hasActivities);
+  buttons.forEach((button) => {
+    button.disabled = !hasActivities;
+    button.setAttribute("aria-disabled", String(!hasActivities));
+  });
+}
+
+function renderDaySummary() {
+  const dayActivities = getActivitiesByDate(state.selectedDate);
+  const total = dayActivities.length;
+  const completed = dayActivities.filter((activity) => activity.status === "completed").length;
+  const pending = total - completed;
+  const timeStatus = getDayTimeStatus(dayActivities, getEffectiveDaySettingsForDate(state.selectedDate));
+  const hasAnyDayData = total > 0 || Boolean(timeStatus.availableMinutes);
+
+  setCounterValue(elements.dayTotalActivities, total);
+  setCounterValue(elements.dayPendingActivities, pending);
+  setCounterValue(elements.dayCompletedActivities, completed);
+  setCounterValue(elements.dayTotalTime, formatMinutes(timeStatus.plannedMinutes || 0));
+  elements.activityListDescription.textContent = total
+    ? `Gerencie as atividades de ${formatDateForHuman(state.selectedDate)}.`
+    : "Você ainda não adicionou atividades para este dia.";
+
+  elements.dayTimeStatusCard.closest(".day-summary-panel")?.classList.toggle("is-empty-day", !hasAnyDayData);
+  renderTimeStatusCard(timeStatus);
+  renderInstagramCard(timeStatus, dayActivities, completed, pending);
+  updateSharingAvailability(total > 0);
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  updateSharingAvailability(getActivitiesByDate(state.selectedDate).length > 0);
+});
+
+/* Calendário premium: mesma lógica, estrutura visual mais limpa. */
+function formatMonthLabel(monthKey) {
+  const { year, month } = parseMonthKey(monthKey);
+  const date = new Date(Date.UTC(year, month - 1, 1, 12));
+  return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
+function renderCalendar() {
+  const { year, month } = parseMonthKey(state.visibleMonth);
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const today = getTodayBrasiliaISO();
+  const counts = createActivityCountByDate();
+  const fragment = document.createDocumentFragment();
+
+  elements.calendarGrid.innerHTML = "";
+  elements.calendarGrid.classList.add("calendar__grid");
+  elements.calendarMonthLabel.classList.add("calendar__month");
+  elements.calendarMonthLabel.textContent = formatMonthLabel(state.visibleMonth);
+  elements.calendarGrid.closest(".calendar-panel")?.classList.add("calendar");
+
+  for (let index = 0; index < firstWeekday; index += 1) {
+    const spacer = document.createElement("span");
+    spacer.className = "calendar-day calendar__day calendar-day--empty calendar__day--empty";
+    spacer.setAttribute("aria-hidden", "true");
+    fragment.appendChild(spacer);
+  }
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateString = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const activityCount = counts.get(dateString) || 0;
+    const locked = isDateLocked(dateString);
+    const selected = dateString === state.selectedDate;
+    const isToday = dateString === today;
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.className = "calendar-day calendar__day";
+    button.dataset.date = dateString;
+    button.setAttribute("aria-pressed", String(selected));
+    button.setAttribute("aria-label", `${formatDateForHuman(dateString)}${activityCount ? `, ${activityCount} atividade(s)` : ""}${locked ? ", dia encerrado" : ""}`);
+    button.classList.toggle("is-selected", selected);
+    button.classList.toggle("calendar__day--selected", selected);
+    button.classList.toggle("is-today", isToday);
+    button.classList.toggle("calendar__day--today", isToday);
+    button.classList.toggle("has-activities", activityCount > 0);
+    button.classList.toggle("calendar__day--has-activity", activityCount > 0);
+    button.classList.toggle("is-locked", locked);
+    button.classList.toggle("calendar__day--locked", locked);
+    button.innerHTML = `<span>${day}</span>${activityCount ? `<small aria-hidden="true"></small>` : ""}`;
+    fragment.appendChild(button);
+  }
+
+  elements.calendarGrid.appendChild(fragment);
+}
+
+/* Correção de estabilidade do calendário: faixa horizontal compacta, sem grade gigante. */
+function renderCalendar() {
+  const { year, month } = parseMonthKey(state.visibleMonth);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const today = getTodayBrasiliaISO();
+  const counts = createActivityCountByDate();
+  const weekLabels = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+  const fragment = document.createDocumentFragment();
+
+  elements.calendarGrid.innerHTML = "";
+  elements.calendarGrid.className = "calendar-grid calendar-strip";
+  elements.calendarMonthLabel.className = "calendar-month";
+  elements.calendarMonthLabel.textContent = formatMonthLabel(state.visibleMonth);
+  elements.calendarGrid.closest(".calendar-panel")?.classList.add("calendar-card");
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateString = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const date = new Date(Date.UTC(year, month - 1, day, 12));
+    const activityCount = counts.get(dateString) || 0;
+    const locked = isDateLocked(dateString);
+    const selected = dateString === state.selectedDate;
+    const isToday = dateString === today;
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.className = "calendar-day calendar-strip__day";
+    button.dataset.date = dateString;
+    button.setAttribute("aria-pressed", String(selected));
+    button.setAttribute("aria-label", `${formatDateForHuman(dateString)}${activityCount ? `, ${activityCount} atividade(s)` : ""}${locked ? ", dia encerrado" : ""}`);
+    button.classList.toggle("is-selected", selected);
+    button.classList.toggle("calendar-day--selected", selected);
+    button.classList.toggle("is-today", isToday);
+    button.classList.toggle("calendar-day--today", isToday);
+    button.classList.toggle("has-activities", activityCount > 0);
+    button.classList.toggle("calendar-day--has-activity", activityCount > 0);
+    button.classList.toggle("is-locked", locked);
+    button.classList.toggle("calendar-day--locked", locked);
+    button.innerHTML = `
+      <span class="calendar-day__number">${day}</span>
+      <span class="calendar-day__week">${weekLabels[date.getUTCDay()]}</span>
+      ${activityCount ? `<i class="calendar-day__dot" aria-hidden="true"></i>` : ""}`;
+    fragment.appendChild(button);
+  }
+
+  elements.calendarGrid.appendChild(fragment);
+
+  requestAnimationFrame(() => {
+    const selectedDay = elements.calendarGrid.querySelector(".calendar-day--selected");
+    selectedDay?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  });
+}
+
+/* Experiência focada: cadastro em painel e seções secundárias recolhíveis. */
+(function initFocusedDayExperience() {
+  function onReady(callback) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", callback);
+    else callback();
+  }
+
+  function createFormBackdrop() {
+    let backdrop = document.querySelector("#formBackdrop");
+    if (backdrop) return backdrop;
+
+    backdrop = document.createElement("button");
+    backdrop.type = "button";
+    backdrop.id = "formBackdrop";
+    backdrop.className = "form-backdrop";
+    backdrop.setAttribute("aria-label", "Fechar cadastro de atividade");
+    document.body.appendChild(backdrop);
+    return backdrop;
+  }
+
+  function openActivityForm(options = {}) {
+    const panel = document.querySelector(".form-panel");
+    const dateInput = document.querySelector("#activityDate");
+    const nameInput = document.querySelector("#activityName");
+
+    if (!panel) return;
+    if (dateInput && state?.selectedDate && !state.editingId) dateInput.value = state.selectedDate;
+
+    document.body.classList.add("activity-form-open");
+    panel.setAttribute("aria-hidden", "false");
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+    panel.setAttribute("aria-labelledby", "formTitle");
+
+    if (options.focus !== false) {
+      window.setTimeout(() => nameInput?.focus(), 80);
+    }
+  }
+
+  function closeActivityForm() {
+    const panel = document.querySelector(".form-panel");
+    document.body.classList.remove("activity-form-open");
+    panel?.setAttribute("aria-hidden", "true");
+  }
+
+  function prepareActivityFormPanel() {
+    const panel = document.querySelector(".form-panel");
+    const heading = panel?.querySelector(".section-heading");
+    if (!panel || panel.dataset.focusPanelReady === "true") return;
+
+    panel.dataset.focusPanelReady = "true";
+    panel.setAttribute("aria-hidden", "true");
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "sheet-close";
+    closeButton.setAttribute("aria-label", "Fechar cadastro");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      if (typeof resetFormMode === "function") resetFormMode();
+      closeActivityForm();
+    });
+
+    heading?.appendChild(closeButton);
+    createFormBackdrop().addEventListener("click", () => {
+      if (typeof resetFormMode === "function") resetFormMode();
+      closeActivityForm();
+    });
+  }
+
+  function prepareOpenButtons() {
+    const buttons = [
+      document.querySelector(".my-day-card__action"),
+      document.querySelector('.nav-actions .btn[href="#activities"]'),
+      document.querySelector('.nav-actions .btn[href="#activityForm"]'),
+    ].filter(Boolean);
+
+    buttons.forEach((button) => {
+      button.dataset.openActivityForm = "true";
+      button.setAttribute("href", "#activityForm");
+      button.textContent = "+ Nova atividade";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        openActivityForm();
+      });
+    });
+  }
+
+  function makeCollapsible(panel, title, description, options = {}) {
+    if (!panel || panel.dataset.collapsibleReady === "true") return;
+
+    const open = Boolean(options.open);
+    const content = document.createElement("div");
+    const toggle = document.createElement("button");
+    const titleId = `${panel.id || title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-toggle`;
+
+    content.className = "accordion-content";
+    while (panel.firstChild) content.appendChild(panel.firstChild);
+
+    toggle.type = "button";
+    toggle.className = "accordion-toggle";
+    toggle.id = titleId;
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.innerHTML = `
+      <span>
+        <strong>${title}</strong>
+        ${description ? `<small>${description}</small>` : ""}
+      </span>
+      <i aria-hidden="true">⌄</i>`;
+
+    panel.dataset.collapsibleReady = "true";
+    panel.classList.add("compact-accordion");
+    panel.classList.toggle("is-open", open);
+    panel.classList.toggle("is-collapsed", !open);
+    panel.appendChild(toggle);
+    panel.appendChild(content);
+
+    toggle.addEventListener("click", () => {
+      const nextOpen = !panel.classList.contains("is-open");
+      panel.classList.toggle("is-open", nextOpen);
+      panel.classList.toggle("is-collapsed", !nextOpen);
+      toggle.setAttribute("aria-expanded", String(nextOpen));
+    });
+  }
+
+  function prepareCollapsibleSections() {
+    const timePanel = document.querySelector(".planning-panel:not(.suggestion-panel)");
+    const calendarPanel = document.querySelector("#calendar");
+    const assistantPanel = document.querySelector(".suggestion-panel");
+    const dayDetailsPanel = document.querySelector(".day-summary-panel");
+    const summaryPanel = document.querySelector("#summary");
+    const sharingPanel = document.querySelector(".sharing-panel");
+
+    makeCollapsible(timePanel, "Tempo disponível", "Ajuste o limite do dia", { open: false });
+    makeCollapsible(calendarPanel, "Calendário", "Escolha outro dia", { open: false });
+    makeCollapsible(assistantPanel, "Quer ajuda para organizar seu dia?", "Sugestão inteligente", { open: false });
+    makeCollapsible(dayDetailsPanel, "Detalhes do dia", "Resumo e status completo", { open: false });
+    makeCollapsible(summaryPanel, "Resumo geral", "Totais de todas as datas", { open: false });
+    makeCollapsible(sharingPanel, "Compartilhamento", "Resumo compartilhável", { open: false });
+  }
+
+  function refreshFocusedState(hasActivities) {
+    const activityPanel = document.querySelector("#activities");
+    const sharingPanel = document.querySelector(".sharing-panel");
+    const emptyText = sharingPanel?.querySelector("#instagramCardStatus");
+
+    document.body.classList.toggle("has-day-activities", Boolean(hasActivities));
+    activityPanel?.classList.toggle("has-activities", Boolean(hasActivities));
+    sharingPanel?.classList.toggle("has-activities", Boolean(hasActivities));
+
+    if (!hasActivities && emptyText) {
+      emptyText.textContent = "Adicione atividades para gerar um resumo compartilhável.";
+    }
+  }
+
+  onReady(() => {
+    prepareActivityFormPanel();
+    prepareOpenButtons();
+    window.setTimeout(prepareCollapsibleSections, 0);
+    refreshFocusedState(typeof getActivitiesByDate === "function" ? getActivitiesByDate(state.selectedDate).length > 0 : false);
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && document.body.classList.contains("activity-form-open")) {
+        closeActivityForm();
+      }
+    });
+  });
+
+  const originalStartEditActivity = typeof startEditActivity === "function" ? startEditActivity : null;
+  if (originalStartEditActivity) {
+    startEditActivity = function focusedStartEditActivity(activityId) {
+      const result = originalStartEditActivity(activityId);
+      openActivityForm({ focus: false });
+      return result;
+    };
+  }
+
+  const originalCreateActivity = typeof createActivity === "function" ? createActivity : null;
+  if (originalCreateActivity) {
+    createActivity = async function focusedCreateActivity(data, limitValidation = null) {
+      const result = await originalCreateActivity(data, limitValidation);
+      if (result) closeActivityForm();
+      return result;
+    };
+  }
+
+  const originalUpdateActivity = typeof updateActivity === "function" ? updateActivity : null;
+  if (originalUpdateActivity) {
+    updateActivity = async function focusedUpdateActivity(activityId, data, limitValidation = null) {
+      const result = await originalUpdateActivity(activityId, data, limitValidation);
+      if (result) closeActivityForm();
+      return result;
+    };
+  }
+
+  const originalUpdateSharingAvailability = typeof updateSharingAvailability === "function" ? updateSharingAvailability : null;
+  if (originalUpdateSharingAvailability) {
+    updateSharingAvailability = function focusedUpdateSharingAvailability(hasActivities) {
+      originalUpdateSharingAvailability(hasActivities);
+      refreshFocusedState(hasActivities);
+    };
+  }
+
+  window.openActivityForm = openActivityForm;
+  window.closeActivityForm = closeActivityForm;
+})();
+
+/* Mantém o resumo geral como informação secundária no fim do fluxo. */
+document.addEventListener("DOMContentLoaded", () => {
+  window.setTimeout(() => {
+    const panels = document.querySelector(".main-panels");
+    const summary = document.querySelector("#summary");
+    if (panels && summary && summary.parentElement !== panels) {
+      panels.appendChild(summary);
+    }
+  }, 20);
+});
+
+/* Cancelar edição também fecha o painel de cadastro focado. */
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelector("#cancelEditButton")?.addEventListener("click", () => {
+    window.setTimeout(() => window.closeActivityForm?.(), 0);
+  });
+});
+
+/* Navegação por abas: mostra uma categoria por vez sem duplicar os componentes existentes. */
+(function initTabbedSections() {
+  const tabDefinitions = [
+    {
+      id: "planejamentos",
+      label: "Planejamentos",
+      selectors: [".planning-panel:not(.suggestion-panel)"],
+    },
+    {
+      id: "atividades",
+      label: "Atividades",
+      selectors: [".workspace"],
+    },
+    {
+      id: "inteligente",
+      label: "Planejamento inteligente",
+      selectors: [".suggestion-panel"],
+    },
+    {
+      id: "compartilhamento",
+      label: "Compartilhamento",
+      selectors: [".sharing-panel"],
+    },
+    {
+      id: "resumo",
+      label: "Resumo do dia",
+      selectors: [".day-summary-panel"],
+    },
+  ];
+
+  function onReady(callback) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", callback);
+    else callback();
+  }
+
+  function getPanelContent(panel) {
+    if (!panel) return null;
+    panel.classList.add("tab-managed-section");
+    panel.classList.remove("is-collapsed");
+    panel.classList.add("is-open");
+    panel.querySelector(".accordion-toggle")?.setAttribute("aria-expanded", "true");
+    return panel;
+  }
+
+  function buildTabs(attempt = 0) {
+    const mainPanels = document.querySelector(".main-panels");
+    const calendar = document.querySelector("#calendar");
+
+    if (!mainPanels || !calendar) return;
+
+    const hasAllCorePanels = document.querySelector(".workspace")
+      && document.querySelector(".planning-panel:not(.suggestion-panel)")
+      && document.querySelector(".suggestion-panel")
+      && document.querySelector(".day-summary-panel");
+
+    if (!hasAllCorePanels && attempt < 10) {
+      window.setTimeout(() => buildTabs(attempt + 1), 60);
+      return;
+    }
+
+    if (document.querySelector(".tabs-section")) return;
+
+    document.body.classList.add("tabs-mode");
+    calendar.classList.add("dates-strip");
+    calendar.classList.remove("is-collapsed");
+    calendar.classList.add("is-open");
+    calendar.querySelector(".accordion-toggle")?.setAttribute("aria-expanded", "true");
+
+    const tabsSection = document.createElement("section");
+    tabsSection.className = "tabs-section reveal is-visible";
+    tabsSection.setAttribute("aria-label", "Categorias do planejamento");
+
+    const tabsNav = document.createElement("div");
+    tabsNav.className = "tabs-nav";
+    tabsNav.setAttribute("role", "tablist");
+    tabsNav.setAttribute("aria-label", "Navegar pelas categorias");
+
+    const tabsContent = document.createElement("div");
+    tabsContent.className = "tabs-content";
+
+    tabDefinitions.forEach((tab, index) => {
+      const tabId = `tab-${tab.id}`;
+      const panelId = `tab-panel-${tab.id}`;
+      const isActive = index === 0;
+      const button = document.createElement("button");
+      const panel = document.createElement("section");
+
+      button.type = "button";
+      button.id = tabId;
+      button.className = `tab-btn${isActive ? " is-active" : ""}`;
+      button.dataset.tab = tab.id;
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", String(isActive));
+      button.setAttribute("aria-controls", panelId);
+      button.setAttribute("tabindex", isActive ? "0" : "-1");
+      button.textContent = tab.label;
+
+      panel.id = panelId;
+      panel.className = `tab-panel${isActive ? " is-active" : ""}`;
+      panel.dataset.tabPanel = tab.id;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+      if (!isActive) panel.hidden = true;
+
+      tab.selectors.forEach((selector) => {
+        const content = getPanelContent(document.querySelector(selector));
+        if (content) panel.appendChild(content);
+      });
+
+      if (!panel.children.length) {
+        const empty = document.createElement("div");
+        empty.className = "tab-empty-state";
+        empty.textContent = "Nada para mostrar nesta categoria agora.";
+        panel.appendChild(empty);
+      }
+
+      tabsNav.appendChild(button);
+      tabsContent.appendChild(panel);
+    });
+
+    tabsSection.appendChild(tabsNav);
+    tabsSection.appendChild(tabsContent);
+    calendar.insertAdjacentElement("afterend", tabsSection);
+
+    const summary = document.querySelector("#summary");
+    if (summary) summary.classList.add("tabs-hidden-summary");
+
+    bindTabs(tabsSection);
+  }
+
+  function activateTab(tabsSection, tabId, options = {}) {
+    const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+    const panels = [...tabsSection.querySelectorAll('[role="tabpanel"]')];
+    const nextTab = tabs.find((tab) => tab.dataset.tab === tabId) || tabs[0];
+    if (!nextTab) return;
+
+    tabs.forEach((tab) => {
+      const active = tab === nextTab;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.setAttribute("tabindex", active ? "0" : "-1");
+    });
+
+    panels.forEach((panel) => {
+      const active = panel.dataset.tabPanel === nextTab.dataset.tab;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+    });
+
+    if (options.focus) nextTab.focus();
+  }
+
+  function bindTabs(tabsSection) {
+    const tabsNav = tabsSection.querySelector(".tabs-nav");
+
+    tabsNav?.addEventListener("click", (event) => {
+      const button = event.target.closest(".tab-btn");
+      if (!button) return;
+      activateTab(tabsSection, button.dataset.tab);
+    });
+
+    tabsNav?.addEventListener("keydown", (event) => {
+      const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+      const currentIndex = tabs.indexOf(document.activeElement);
+      if (currentIndex < 0) return;
+
+      const keyMap = {
+        ArrowRight: 1,
+        ArrowDown: 1,
+        ArrowLeft: -1,
+        ArrowUp: -1,
+      };
+
+      if (!(event.key in keyMap)) return;
+      event.preventDefault();
+      const nextIndex = (currentIndex + keyMap[event.key] + tabs.length) % tabs.length;
+      activateTab(tabsSection, tabs[nextIndex].dataset.tab, { focus: true });
+    });
+
+    document.querySelectorAll('a[href="#activityForm"], .my-day-card__action').forEach((link) => {
+      link.addEventListener("click", () => activateTab(tabsSection, "atividades"));
+    });
+  }
+
+  onReady(() => window.setTimeout(() => buildTabs(), 140));
+
+  const previousCreateActivity = typeof createActivity === "function" ? createActivity : null;
+  if (previousCreateActivity) {
+    createActivity = async function tabbedCreateActivity(data, limitValidation = null) {
+      const result = await previousCreateActivity(data, limitValidation);
+      if (result) {
+        const tabsSection = document.querySelector(".tabs-section");
+        if (tabsSection) activateTab(tabsSection, "atividades");
+      }
+      return result;
+    };
+  }
+})();
+
+/* Ajuste definitivo das abas: rótulos curtos, datas centralizadas e uma seção por vez. */
+(function refineDefinitiveTabs() {
+  const labelMap = {
+    planejamentos: "Planejamentos",
+    atividades: "Atividades",
+    inteligente: "Inteligente",
+    compartilhamento: "Compartilhar",
+    compartilhar: "Compartilhar",
+    resumo: "Resumo",
+  };
+
+  function refineTabs(attempt = 0) {
+    const tabsSection = document.querySelector(".tabs-section");
+    if (!tabsSection) {
+      if (attempt < 20) window.setTimeout(() => refineTabs(attempt + 1), 80);
+      return;
+    }
+
+    tabsSection.classList.add("tabs-section--definitive");
+
+    tabsSection.querySelectorAll(".tab-btn").forEach((button) => {
+      const nextLabel = labelMap[button.dataset.tab];
+      if (nextLabel) button.textContent = nextLabel;
+      button.setAttribute("aria-label", `Abrir aba ${button.textContent.trim()}`);
+    });
+
+    tabsSection.querySelectorAll(".tab-panel").forEach((panel) => {
+      const active = panel.classList.contains("is-active");
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+    });
+
+    const calendar = document.querySelector("#calendar");
+    calendar?.classList.add("dates-strip--centered");
+  }
+
+  document.addEventListener("DOMContentLoaded", () => refineTabs());
+})();
+
+/* Garante que o painel de compartilhamento fique dentro da aba correta. */
+(function ensureSharingTabContent() {
+  function repair(attempt = 0) {
+    const sharingPanel = document.querySelector(".sharing-panel");
+    const tabPanel = document.querySelector('#tab-panel-compartilhamento, #tab-panel-compartilhar');
+
+    if (sharingPanel && tabPanel && !tabPanel.contains(sharingPanel)) {
+      tabPanel.querySelector(".tab-empty-state")?.remove();
+      sharingPanel.classList.add("tab-managed-section", "is-open");
+      sharingPanel.classList.remove("is-collapsed");
+      sharingPanel.querySelector(".accordion-toggle")?.setAttribute("aria-expanded", "true");
+      tabPanel.appendChild(sharingPanel);
+    }
+
+    if ((!sharingPanel || !tabPanel) && attempt < 20) {
+      window.setTimeout(() => repair(attempt + 1), 80);
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", () => window.setTimeout(() => repair(), 180));
+})();
+
+/* Ordem final: Meu dia -> datas -> abas -> conteúdo, preservando a aba ativa ao trocar a data. */
+(function enforceDateSelectorBeforeTabs() {
+  function getActiveTabId() {
+    return document.querySelector('.tabs-section .tab-btn.is-active')?.dataset.tab || "planejamentos";
+  }
+
+  function setActiveTab(tabId) {
+    const tabsSection = document.querySelector(".tabs-section");
+    if (!tabsSection) return;
+
+    const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+    const panels = [...tabsSection.querySelectorAll('[role="tabpanel"]')];
+    const nextTab = tabs.find((tab) => tab.dataset.tab === tabId) || tabs[0];
+    if (!nextTab) return;
+
+    tabs.forEach((tab) => {
+      const active = tab === nextTab;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.setAttribute("tabindex", active ? "0" : "-1");
+    });
+
+    panels.forEach((panel) => {
+      const active = panel.dataset.tabPanel === nextTab.dataset.tab;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+    });
+  }
+
+  function enforceOrder() {
+    const mainPanels = document.querySelector(".main-panels");
+    const calendar = document.querySelector("#calendar");
+    const tabsSection = document.querySelector(".tabs-section");
+
+    if (!mainPanels || !calendar || !tabsSection) return;
+
+    calendar.classList.add("date-selector", "dates-strip", "dates-strip--centered");
+    tabsSection.classList.add("tabs-section--after-dates", "tabs-section--definitive");
+
+    if (calendar.parentElement !== mainPanels) {
+      mainPanels.insertBefore(calendar, mainPanels.firstElementChild);
+    }
+
+    if (tabsSection.previousElementSibling !== calendar) {
+      calendar.insertAdjacentElement("afterend", tabsSection);
+    }
+  }
+
+  function refreshLayoutAfterDateChange(activeTabId = getActiveTabId()) {
+    window.requestAnimationFrame(() => {
+      enforceOrder();
+      setActiveTab(activeTabId);
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    window.setTimeout(() => refreshLayoutAfterDateChange(), 240);
+  });
+
+  const previousSelectDate = typeof selectDate === "function" ? selectDate : null;
+  if (previousSelectDate) {
+    selectDate = function orderedSelectDate(dateString, options = {}) {
+      const activeTabId = getActiveTabId();
+      const result = previousSelectDate(dateString, options);
+      refreshLayoutAfterDateChange(activeTabId);
+      return result;
+    };
+  }
+
+  const previousRenderApp = typeof renderApp === "function" ? renderApp : null;
+  if (previousRenderApp) {
+    renderApp = function orderedRenderApp() {
+      const activeTabId = getActiveTabId();
+      const result = previousRenderApp();
+      refreshLayoutAfterDateChange(activeTabId);
+      return result;
+    };
+  }
+})();
+
+/* Sequência definitiva das abas: Planejamento, Cadastro, Atividades, Inteligente, Compartilhar, Resumo. */
+(function initFinalActivityTabsOrder() {
+  const finalTabs = [
+    { id: "planejamento", label: "Planejamento", selector: ".planning-panel:not(.suggestion-panel)" },
+    { id: "cadastro", label: "Cadastro de atividades", selector: ".form-panel" },
+    { id: "minhas-atividades", label: "Minhas atividades", selector: "#activities" },
+    { id: "inteligente", label: "Inteligente", selector: ".suggestion-panel" },
+    { id: "compartilhar", label: "Compartilhar", selector: ".sharing-panel" },
+    { id: "resumo", label: "Resumo", selector: ".day-summary-panel" },
+  ];
+
+  function getCurrentTab() {
+    const active = document.querySelector(".tabs-section .tab-btn.is-active")?.dataset.tab;
+    if (active === "atividades") return "minhas-atividades";
+    if (active === "planejamentos") return "planejamento";
+    if (active === "compartilhamento") return "compartilhar";
+    return active || "planejamento";
+  }
+
+  function activateFinalTab(tabId, options = {}) {
+    const tabsSection = document.querySelector(".tabs-section");
+    if (!tabsSection) return;
+
+    const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+    const panels = [...tabsSection.querySelectorAll('[role="tabpanel"]')];
+    const nextTab = tabs.find((tab) => tab.dataset.tab === tabId) || tabs[0];
+    if (!nextTab) return;
+
+    tabs.forEach((tab) => {
+      const active = tab === nextTab;
+      tab.classList.toggle("is-active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.setAttribute("tabindex", active ? "0" : "-1");
+    });
+
+    panels.forEach((panel) => {
+      const active = panel.dataset.tabPanel === nextTab.dataset.tab;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+    });
+
+    if (options.focus) nextTab.focus();
+  }
+
+  function preparePanelElement(element, tabId) {
+    if (!element) return null;
+
+    element.classList.add("tab-managed-section", `tab-managed-section--${tabId}`);
+    element.classList.remove("is-collapsed");
+    element.classList.add("is-open");
+    element.querySelector(".accordion-toggle")?.setAttribute("aria-expanded", "true");
+
+    if (element.classList.contains("form-panel")) {
+      element.setAttribute("aria-hidden", "false");
+      element.removeAttribute("aria-modal");
+      element.removeAttribute("role");
+    }
+
+    return element;
+  }
+
+  function rebuildTabs(attempt = 0) {
+    const tabsSection = document.querySelector(".tabs-section");
+    const calendar = document.querySelector("#calendar");
+    const mainPanels = document.querySelector(".main-panels");
+
+    if (!tabsSection || !calendar || !mainPanels) {
+      if (attempt < 30) window.setTimeout(() => rebuildTabs(attempt + 1), 80);
+      return;
+    }
+
+    const collected = finalTabs.map((tab) => ({ ...tab, element: document.querySelector(tab.selector) }));
+    const missingCore = collected.some((tab) => tab.id !== "compartilhar" && !tab.element);
+    if (missingCore && attempt < 30) {
+      window.setTimeout(() => rebuildTabs(attempt + 1), 80);
+      return;
+    }
+
+    const activeBefore = getCurrentTab();
+    const storage = document.createDocumentFragment();
+    collected.forEach((tab) => {
+      if (tab.element) storage.appendChild(tab.element);
+    });
+
+    let tabsNav = tabsSection.querySelector(".tabs-nav");
+    let tabsContent = tabsSection.querySelector(".tabs-content");
+
+    if (!tabsNav) {
+      tabsNav = document.createElement("div");
+      tabsNav.className = "tabs-nav";
+      tabsNav.setAttribute("role", "tablist");
+      tabsSection.prepend(tabsNav);
+    }
+
+    if (!tabsContent) {
+      tabsContent = document.createElement("div");
+      tabsContent.className = "tabs-content";
+      tabsSection.appendChild(tabsContent);
+    }
+
+    tabsNav.replaceChildren();
+    tabsContent.replaceChildren();
+
+    tabsSection.classList.add("tabs-section--final-order", "tabs-section--definitive", "tabs-section--after-dates");
+    tabsNav.setAttribute("role", "tablist");
+    tabsNav.setAttribute("aria-label", "Menu de seções do dia");
+
+    collected.forEach((tab, index) => {
+      const button = document.createElement("button");
+      const panel = document.createElement("section");
+      const active = tab.id === activeBefore || (!finalTabs.some((item) => item.id === activeBefore) && index === 0);
+      const tabId = `tab-${tab.id}`;
+      const panelId = `tab-panel-${tab.id}`;
+
+      button.type = "button";
+      button.id = tabId;
+      button.className = `tab-btn${active ? " is-active" : ""}`;
+      button.dataset.tab = tab.id;
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", String(active));
+      button.setAttribute("aria-controls", panelId);
+      button.setAttribute("tabindex", active ? "0" : "-1");
+      button.textContent = tab.label;
+
+      panel.id = panelId;
+      panel.className = `tab-panel tab-panel--${tab.id}${active ? " is-active" : ""}`;
+      panel.dataset.tabPanel = tab.id;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", tabId);
+      panel.hidden = !active;
+      panel.setAttribute("aria-hidden", String(!active));
+
+      const element = preparePanelElement(tab.element, tab.id);
+      if (element) {
+        panel.appendChild(element);
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "tab-empty-state";
+        empty.textContent = tab.id === "compartilhar"
+          ? "Adicione atividades para gerar um resumo compartilhável."
+          : "Nada para mostrar nesta seção agora.";
+        panel.appendChild(empty);
+      }
+
+      tabsNav.appendChild(button);
+      tabsContent.appendChild(panel);
+    });
+
+    calendar.classList.add("date-selector", "dates-strip", "dates-strip--centered");
+    if (calendar.parentElement !== mainPanels) mainPanels.insertBefore(calendar, mainPanels.firstElementChild);
+    if (tabsSection.previousElementSibling !== calendar) calendar.insertAdjacentElement("afterend", tabsSection);
+
+    activateFinalTab(activeBefore);
+  }
+
+  function bindFinalTabs() {
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest(".tabs-section--final-order .tab-btn");
+      if (!button) return;
+      activateFinalTab(button.dataset.tab);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const tabsSection = document.querySelector(".tabs-section--final-order");
+      if (!tabsSection || !event.target.matches('[role="tab"]')) return;
+      if (!["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) return;
+
+      const tabs = [...tabsSection.querySelectorAll('[role="tab"]')];
+      const currentIndex = tabs.indexOf(event.target);
+      if (currentIndex < 0) return;
+
+      event.preventDefault();
+      const direction = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
+      const nextTab = tabs[(currentIndex + direction + tabs.length) % tabs.length];
+      activateFinalTab(nextTab.dataset.tab, { focus: true });
+    });
+
+    document.addEventListener("click", (event) => {
+      const opener = event.target.closest('.my-day-card__action, .nav-actions .btn[href="#activityForm"], .nav-actions .btn[href="#activities"]');
+      if (!opener) return;
+      event.preventDefault();
+      event.stopPropagation();
+      document.body.classList.remove("activity-form-open");
+      activateFinalTab("cadastro");
+      window.setTimeout(() => document.querySelector("#activityName")?.focus(), 80);
+    }, true);
+  }
+
+  document.addEventListener("DOMContentLoaded", () => {
+    window.setTimeout(rebuildTabs, 360);
+    bindFinalTabs();
+  });
+
+  const previousSelectDate = typeof selectDate === "function" ? selectDate : null;
+  if (previousSelectDate) {
+    selectDate = function finalTabsSelectDate(dateString, options = {}) {
+      const active = getCurrentTab();
+      const result = previousSelectDate(dateString, options);
+      window.requestAnimationFrame(() => {
+        rebuildTabs();
+        activateFinalTab(active);
+      });
+      return result;
+    };
+  }
+
+  const previousRenderApp = typeof renderApp === "function" ? renderApp : null;
+  if (previousRenderApp) {
+    renderApp = function finalTabsRenderApp() {
+      const active = getCurrentTab();
+      const result = previousRenderApp();
+      window.requestAnimationFrame(() => {
+        rebuildTabs();
+        activateFinalTab(active);
+      });
+      return result;
+    };
+  }
+
+  const previousStartEditActivity = typeof startEditActivity === "function" ? startEditActivity : null;
+  if (previousStartEditActivity) {
+    startEditActivity = function finalTabsStartEditActivity(activityId) {
+      const result = previousStartEditActivity(activityId);
+      document.body.classList.remove("activity-form-open");
+      window.requestAnimationFrame(() => {
+        rebuildTabs();
+        activateFinalTab("cadastro");
+      });
+      return result;
+    };
+  }
+
+  const previousCreateActivity = typeof createActivity === "function" ? createActivity : null;
+  if (previousCreateActivity) {
+    createActivity = async function finalTabsCreateActivity(data, limitValidation = null) {
+      const result = await previousCreateActivity(data, limitValidation);
+      if (result) {
+        document.body.classList.remove("activity-form-open");
+        window.requestAnimationFrame(() => {
+          rebuildTabs();
+          activateFinalTab("minhas-atividades");
+        });
+      }
+      return result;
+    };
+  }
+})();
+
+/* Mantém o formulário acessível dentro da aba de cadastro após cancelar edição. */
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelector("#cancelEditButton")?.addEventListener("click", () => {
+    window.setTimeout(() => {
+      const formPanel = document.querySelector("#tab-panel-cadastro .form-panel");
+      if (formPanel) {
+        formPanel.setAttribute("aria-hidden", "false");
+        formPanel.removeAttribute("aria-modal");
+        formPanel.removeAttribute("role");
+        document.body.classList.remove("activity-form-open");
+      }
+    }, 20);
+  });
+});

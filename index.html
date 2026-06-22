@@ -33,6 +33,10 @@
           <a href="#calendar" class="nav-link">Calendário</a>
           <a href="#activityForm" class="nav-link">Cadastro</a>
           <a href="#activities" class="btn btn--small btn--primary">Nova atividade</a>
+          <button class="theme-toggle" type="button" id="themeToggle" aria-label="Alternar para modo escuro" aria-pressed="false">
+            <span class="theme-toggle__icon" aria-hidden="true">☾</span>
+            <span class="theme-toggle__text">Modo escuro</span>
+          </button>
         </div>
       </nav>
     </header>
@@ -48,11 +52,33 @@
           </p>
         </div>
 
-        <div class="selected-day-card" aria-label="Dia selecionado">
-          <span>Dia selecionado</span>
+        <article class="selected-day-card my-day-card" aria-label="Resumo do dia selecionado">
+          <span>Meu dia</span>
           <strong id="selectedDateLabel">Hoje</strong>
           <small id="selectedDateStatus">Pronto para alterações</small>
-        </div>
+
+          <div class="my-day-card__grid" aria-label="Indicadores do dia">
+            <div>
+              <span>Atividades</span>
+              <strong id="myDayActivities">0</strong>
+            </div>
+            <div>
+              <span>Disponível</span>
+              <strong id="myDayAvailable">0min</strong>
+            </div>
+            <div>
+              <span>Planejado</span>
+              <strong id="myDayPlanned">0min</strong>
+            </div>
+            <div>
+              <span id="myDayBalanceLabel">Restante</span>
+              <strong id="myDayBalance">0min</strong>
+            </div>
+          </div>
+
+          <p id="myDayMessage">Defina o tempo disponível para começar a organizar seu dia.</p>
+          <a class="btn btn--primary my-day-card__action" href="#activityForm">Adicionar atividade</a>
+        </article>
       </section>
 
       <section id="summary" class="summary-grid section-space reveal" aria-label="Resumo geral">
@@ -82,7 +108,8 @@
       </section>
 
       <section class="planner-layout section-space">
-        <aside id="calendar" class="calendar-panel reveal" aria-labelledby="calendarTitle">
+<div class="main-panels">
+          <aside id="calendar" class="calendar-panel calendar-card reveal" aria-labelledby="calendarTitle">
           <div class="section-heading section-heading--compact">
             <span class="eyebrow">Calendário</span>
             <h2 id="calendarTitle">Escolha uma data</h2>
@@ -122,90 +149,12 @@
             <span><i class="legend-dot legend-dot--locked"></i>Encerrado</span>
           </div>
         </aside>
-
-        <div class="main-panels">
-          <section class="day-summary-panel reveal" aria-labelledby="daySummaryTitle">
-            <div class="section-heading section-heading--inline">
-              <div>
-                <span class="eyebrow">Resumo do dia</span>
-                <h2 id="daySummaryTitle">Atividades da data</h2>
-              </div>
-
-              <div class="share-actions" aria-label="Compartilhamento do dia">
-                <button class="btn btn--secondary" type="button" id="shareWhatsAppButton">Compartilhar no WhatsApp</button>
-                <button class="btn btn--ghost" type="button" id="shareInstagramButton">Compartilhar no Instagram</button>
-                <button class="btn btn--ghost" type="button" id="copySummaryButton">Copiar resumo</button>
-                <button class="btn btn--primary" type="button" id="nativeShareButton">Compartilhar</button>
-              </div>
-            </div>
-
-            <div id="lockedDayMessage" class="locked-message" role="status" aria-live="polite">
-              Este dia já foi encerrado. Você pode visualizar as atividades, mas não pode alterá-las.
-            </div>
-
-            <article id="dayTimeStatusCard" class="time-status-card" aria-live="polite">
-              <div>
-                <span>Tempo disponível</span>
-                <strong id="statusAvailableTime">0min</strong>
-              </div>
-              <div>
-                <span>Atividades</span>
-                <strong id="statusActivitiesTime">0min</strong>
-              </div>
-              <div>
-                <span>Pausas</span>
-                <strong id="statusBreaksTime">0min</strong>
-              </div>
-              <div>
-                <span>Total planejado</span>
-                <strong id="statusPlannedTime">0min</strong>
-              </div>
-              <div>
-                <span id="statusBalanceLabel">Restante</span>
-                <strong id="statusBalanceTime">0min</strong>
-              </div>
-              <p id="statusMessage">Informe o tempo disponível para acompanhar o limite do dia.</p>
-            </article>
-
-            <div class="instagram-share-card" id="instagramShareCard" aria-label="Card para compartilhar no Instagram">
-              <span>Meu plano de hoje</span>
-              <strong id="instagramCardDate">Hoje</strong>
-              <div class="instagram-card-grid">
-                <small id="instagramCardAvailable">Disponível: 0min</small>
-                <small id="instagramCardPlanned">Planejado: 0min</small>
-                <small id="instagramCardBalance">Restante: 0min</small>
-                <small id="instagramCardTotal">0 atividades</small>
-              </div>
-              <ul id="instagramCardActivities"></ul>
-              <p id="instagramCardStatus">Informe seu planejamento para compartilhar.</p>
-            </div>
-
-            <div class="day-stats" aria-label="Resumo do dia selecionado">
-              <article>
-                <span>Total</span>
-                <strong id="dayTotalActivities">0</strong>
-              </article>
-              <article>
-                <span>Pendentes</span>
-                <strong id="dayPendingActivities">0</strong>
-              </article>
-              <article>
-                <span>Concluídas</span>
-                <strong id="dayCompletedActivities">0</strong>
-              </article>
-              <article>
-                <span>Tempo</span>
-                <strong id="dayTotalTime">0min</strong>
-              </article>
-            </div>
-          </section>
-
-          <section class="planning-panel reveal" aria-labelledby="planningTitle">
+<section class="planning-panel reveal" aria-labelledby="planningTitle">
             <div class="section-heading section-heading--inline">
               <div>
                 <span class="eyebrow">Planejamento inteligente</span>
-                <h2 id="planningTitle">Tempo disponível do dia</h2>
-                <p>Informe sua janela de trabalho e gere uma agenda sugerida para a data selecionada.</p>
+                <h2 id="planningTitle">Tempo disponível</h2>
+                <p>Defina quanto tempo você tem hoje.</p>
               </div>
             </div>
 
@@ -234,21 +183,11 @@
               <div class="planning-actions">
                 <button class="btn btn--ghost" type="submit" id="saveSettingsButton">Salvar planejamento</button>
                 <button class="btn btn--secondary" type="button" id="generateScheduleButton">Gerar agenda automaticamente</button>
-                <button class="btn btn--primary" type="button" id="generateSuggestionButton">Gerar sugestão inteligente</button>
               </div>
             </form>
 
             <div id="scheduleWarning" class="schedule-warning" role="status" aria-live="polite"></div>
             <div id="scheduleList" class="schedule-list" aria-live="polite"></div>
-
-            <article id="aiSuggestionCard" class="ai-card is-hidden" aria-live="polite">
-              <div>
-                <span class="eyebrow">IA local</span>
-                <h3>Sugestão inteligente</h3>
-              </div>
-              <p id="aiSuggestionText"></p>
-              <button class="btn btn--secondary is-hidden" type="button" id="applySuggestionButton">Aplicar sugestão</button>
-            </article>
           </section>
           <section class="workspace">
             <div class="form-panel reveal">
@@ -333,6 +272,104 @@
               </div>
             </section>
           </section>
+          <section class="planning-panel suggestion-panel reveal" aria-labelledby="assistantTitle">
+            <div class="section-heading section-heading--inline">
+              <div>
+                <span class="eyebrow">Sugestão inteligente</span>
+                <h2 id="assistantTitle">Assistente de planejamento</h2>
+                <p>Posso sugerir a melhor ordem das suas atividades com base no tempo disponível.</p>
+              </div>
+            </div>
+
+            <div class="planning-actions">
+              <button class="btn btn--primary" type="button" id="generateSuggestionButton">Organizar meu dia</button>
+            </div>
+
+            <article id="aiSuggestionCard" class="ai-card is-hidden" aria-live="polite">
+              <div>
+                <span class="eyebrow">Assistente</span>
+                <h3>Assistente de planejamento</h3>
+              </div>
+              <p id="aiSuggestionText">Posso sugerir a melhor ordem das suas atividades com base no tempo disponível do dia.</p>
+              <button class="btn btn--secondary is-hidden" type="button" id="applySuggestionButton">Aplicar sugestão</button>
+            </article>
+          </section>
+
+          <section class="day-summary-panel reveal">
+            <div class="section-heading section-heading--inline">
+              <div>
+                <span class="eyebrow">Resumo do dia</span>
+                <h2 id="daySummaryTitle">Atividades da data</h2>
+              </div>
+
+              <div class="share-actions" aria-label="Compartilhamento do dia">
+                <button class="btn btn--secondary" type="button" id="shareWhatsAppButton" aria-label="Compartilhar resumo no WhatsApp">WhatsApp</button>
+                <button class="btn btn--ghost" type="button" id="shareInstagramButton" aria-label="Copiar resumo para Instagram">Instagram</button>
+                <button class="btn btn--ghost" type="button" id="copySummaryButton" aria-label="Copiar resumo do dia">Copiar</button>
+                <button class="btn btn--primary" type="button" id="nativeShareButton" aria-label="Compartilhar resumo do dia">Enviar</button>
+              </div>
+            </div>
+
+            <div id="lockedDayMessage" class="locked-message" role="status" aria-live="polite">
+              Este dia já foi encerrado. Você pode visualizar as atividades, mas não pode alterá-las.
+            </div>
+
+            <article id="dayTimeStatusCard" class="time-status-card" aria-live="polite">
+              <div>
+                <span>Tempo disponível</span>
+                <strong id="statusAvailableTime">0min</strong>
+              </div>
+              <div>
+                <span>Atividades</span>
+                <strong id="statusActivitiesTime">0min</strong>
+              </div>
+              <div>
+                <span>Pausas</span>
+                <strong id="statusBreaksTime">0min</strong>
+              </div>
+              <div>
+                <span>Total planejado</span>
+                <strong id="statusPlannedTime">0min</strong>
+              </div>
+              <div>
+                <span id="statusBalanceLabel">Restante</span>
+                <strong id="statusBalanceTime">0min</strong>
+              </div>
+              <p id="statusMessage">Informe o tempo disponível para acompanhar o limite do dia.</p>
+            </article>
+
+            <div class="instagram-share-card" id="instagramShareCard" aria-label="Card para compartilhar no Instagram">
+              <span>Meu plano de hoje</span>
+              <strong id="instagramCardDate">Hoje</strong>
+              <div class="instagram-card-grid">
+                <small id="instagramCardAvailable">Disponível: 0min</small>
+                <small id="instagramCardPlanned">Planejado: 0min</small>
+                <small id="instagramCardBalance">Restante: 0min</small>
+                <small id="instagramCardTotal">0 atividades</small>
+              </div>
+              <ul id="instagramCardActivities"></ul>
+              <p id="instagramCardStatus">Informe seu planejamento para compartilhar.</p>
+            </div>
+
+            <div class="day-stats" aria-label="Resumo do dia selecionado">
+              <article>
+                <span>Total</span>
+                <strong id="dayTotalActivities">0</strong>
+              </article>
+              <article>
+                <span>Pendentes</span>
+                <strong id="dayPendingActivities">0</strong>
+              </article>
+              <article>
+                <span>Concluídas</span>
+                <strong id="dayCompletedActivities">0</strong>
+              </article>
+              <article>
+                <span>Tempo</span>
+                <strong id="dayTotalTime">0min</strong>
+              </article>
+            </div>
+          </section>
         </div>
       </section>
     </main>
@@ -346,6 +383,15 @@
   <script src="script.js"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
 
 
 
